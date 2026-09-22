@@ -7,12 +7,18 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 let browserClient: SupabaseClient | undefined
 
 export function createClient() {
-  if (browserClient) return browserClient
+  if (typeof window !== 'undefined' && browserClient) return browserClient
 
-  browserClient = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co'
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key'
 
-  return browserClient
+  const client = createBrowserClient(supabaseUrl, supabaseAnonKey)
+
+  if (typeof window !== 'undefined') {
+    browserClient = client
+  }
+
+  return client
 }
