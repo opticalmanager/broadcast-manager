@@ -313,7 +313,13 @@ export function WhatsAppConfig() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => '');
+        data = { error: text || `Server returned HTTP ${res.status}` };
+      }
 
       if (!res.ok) {
         // The route names the failing step and which field to check

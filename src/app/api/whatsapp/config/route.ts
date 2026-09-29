@@ -327,7 +327,7 @@ export async function POST(request: Request) {
     if (claimedError) {
       console.error('Error checking phone_number_id ownership:', claimedError)
       return NextResponse.json(
-        { error: 'Failed to validate configuration' },
+        { error: `Failed to validate configuration: ${claimedError.message}` },
         { status: 500 }
       )
     }
@@ -398,7 +398,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            'Failed to encrypt token. Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.',
+            `Failed to encrypt token (${message}). Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.`,
         },
         { status: 500 }
       )
@@ -515,7 +515,7 @@ export async function POST(request: Request) {
       if (updateError) {
         console.error('Error updating whatsapp_config:', updateError)
         return NextResponse.json(
-          { error: 'Failed to update configuration' },
+          { error: `Failed to update configuration: ${updateError.message}` },
           { status: 500 }
         )
       }
@@ -535,7 +535,7 @@ export async function POST(request: Request) {
       if (insertError) {
         console.error('Error inserting whatsapp_config:', insertError)
         return NextResponse.json(
-          { error: 'Failed to save configuration' },
+          { error: `Failed to save configuration: ${insertError.message}` },
           { status: 500 }
         )
       }
