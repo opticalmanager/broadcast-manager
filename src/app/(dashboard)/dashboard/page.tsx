@@ -9,7 +9,9 @@ import {
   UserPlus,
   DollarSign,
   Send,
+  Megaphone,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 import {
   loadActivity,
@@ -38,6 +40,18 @@ import { useTranslations } from 'next-intl'
 
 type RangeDays = 7 | 30 | 90
 
+interface WhatsAppConfigSummary {
+  connected: boolean
+  phone_info?: {
+    id?: string
+    display_phone_number?: string
+    verified_name?: string
+    quality_rating?: string
+    whatsapp_business_manager_messaging_limit?: string
+    throughput?: { level?: string }
+  }
+}
+
 export default function DashboardPage() {
   const t = useTranslations('Dashboard.page')
   const { defaultCurrency } = useAuth()
@@ -64,6 +78,9 @@ export default function DashboardPage() {
   const [activity, setActivity] = useState<ActivityItem[] | null>(null)
   const [activityLoading, setActivityLoading] = useState(true)
 
+  const [waConfig, setWaConfig] = useState<WhatsAppConfigSummary | null>(null)
+  const [waLoading, setWaLoading] = useState(true)
+
   const loadAll = useCallback(() => {
     const db = createClient()
 
@@ -74,6 +91,12 @@ export default function DashboardPage() {
       .then((m) => setMetrics(m))
       .catch((err) => console.error('[dashboard] metrics failed:', err))
       .finally(() => setMetricsLoading(false))
+
+    void fetch('/api/whatsapp/config', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setWaConfig(data))
+      .catch((err) => console.error('[dashboard] whatsapp config failed:', err))
+      .finally(() => setWaLoading(false))
 
     void loadConversationsSeries(db, 30)
       .then((s) => setSeries((prev) => ({ ...prev, 30: s })))
@@ -132,7 +155,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Metric cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {metricsLoading || !metrics ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
         ) : (
@@ -186,6 +209,50 @@ export default function DashboardPage() {
             />
           </>
         )}
+        {waLoading ? (
+          <SkeletonCard />
+        ) : (
+          <MetricCard
+            title={t('campaignLimit')}
+            value={
+              waConfig?.connected
+                ? formatMessagingLimit(
+                    waConfig.phone_info?.whatsapp_business_manager_messaging_limit
+                  )
+                : '—'
+            }
+            icon={Megaphone}
+            subtitle={
+              waConfig?.connected ? (
+                (() => {
+                  const quality = getQualityInfo(waConfig.phone_info?.quality_rating, t)
+                  const tier = getTierDisplay(
+                    waConfig.phone_info?.whatsapp_business_manager_messaging_limit
+                  )
+                  return (
+                    <span className="flex items-center gap-1.5">
+                      <span
+                        className={cn(
+                          'inline-block h-2 w-2 rounded-full shrink-0',
+                          quality.color
+                        )}
+                      />
+                      <span>
+                        {quality.label}
+                        {tier ? ` · ${tier}` : ''}
+                      </span>
+                    </span>
+                  )
+                })()
+              ) : (
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  <span className="inline-block h-2 w-2 rounded-full bg-muted-foreground/40 shrink-0" />
+                  <span>{t('campaignLimitNotConnected')}</span>
+                </span>
+              )
+            }
+          />
+        )}
       </div>
 
       {/* Quick actions */}
@@ -231,4 +298,77 @@ function deltaLabel(delta: number, suffix: string, noChangeLabel: string): strin
   if (delta === 0) return noChangeLabel
   const sign = delta > 0 ? '+' : ''
   return `${sign}${delta.toLocaleString()} ${suffix}`
+}
+
+function formatMessagingLimit(tier?: string | null): string {
+  if (!tier) return '—'
+  const normalized = tier.toUpperCase()
+  switch (normalized) {
+    case 'TIER_50':
+      return '50 / day'
+    case 'TIER_250':
+      return '250 / day'
+    case 'TIER_1K':
+      return '1,000 / day'
+    case 'TIER_10K':
+      return '10,000 / day'
+    case 'TIER_100K':
+      return '100,000 / day'
+    case 'TIER_UNLIMITED':
+      return 'Unlimited'
+    default:
+      if (normalized.startsWith('TIER_')) {
+        return `${normalized.replace('TIER_', '')} / day`
+      }
+      return tier
+  }
+}
+
+function getTierDisplay(tier?: string | null): string | null {
+  if (!tier) return null
+  const normalized = tier.toUpperCase()
+  switch (normalized) {
+    case 'TIER_50':
+    case 'TIER_250':
+      return 'Tier 0'
+    case 'TIER_1K':
+      return 'Tier 1'
+    case 'TIER_10K':
+      return 'Tier 2'
+    case 'TIER_100K':
+      return 'Tier 3'
+    case 'TIER_UNLIMITED':
+      return 'Tier 4'
+    default:
+      return null
+  }
+}
+
+function getQualityInfo(
+  quality?: string | null,
+  t?: { (key: 'qualityHigh' | 'qualityMedium' | 'qualityLow'): string }
+) {
+  const q = quality?.toUpperCase()
+  if (q === 'GREEN') {
+    return {
+      label: t ? t('qualityHigh') : 'High Quality',
+      color: 'bg-emerald-500',
+    }
+  }
+  if (q === 'YELLOW') {
+    return {
+      label: t ? t('qualityMedium') : 'Medium Quality',
+      color: 'bg-amber-500',
+    }
+  }
+  if (q === 'RED') {
+    return {
+      label: t ? t('qualityLow') : 'Low Quality',
+      color: 'bg-rose-500',
+    }
+  }
+  return {
+    label: 'Connected',
+    color: 'bg-emerald-500',
+  }
 }

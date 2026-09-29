@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Minus } from 'lucide-react'
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 interface MetricCardProps {
@@ -18,7 +18,7 @@ interface MetricCardProps {
     label: string
   }
   /** Used instead of `delta` when the metric has a static subtitle. */
-  subtitle?: string
+  subtitle?: ReactNode
 }
 
 export function MetricCard({ title, value, icon: Icon, delta, subtitle }: MetricCardProps) {
@@ -34,7 +34,7 @@ export function MetricCard({ title, value, icon: Icon, delta, subtitle }: Metric
         {value}
       </p>
       {delta ? <DeltaRow sign={delta.sign} label={delta.label} /> : subtitle ? (
-        <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>
+        <div className="mt-2 text-sm text-muted-foreground">{subtitle}</div>
       ) : null}
     </div>
   )

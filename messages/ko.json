@@ -79,7 +79,12 @@
       "newTodayVsYesterday": "어제 대비 신규",
       "vsYesterday": "어제 대비",
       "openDeals": "진행 중인 딜 {count}건",
-      "noChange": "변동 없음 {suffix}"
+      "noChange": "변동 없음 {suffix}",
+      "campaignLimit": "캠페인 발송 한도",
+      "campaignLimitNotConnected": "연결되지 않음",
+      "qualityHigh": "높은 품질",
+      "qualityMedium": "보통 품질",
+      "qualityLow": "낮은 품질"
     },
     "quickActions": {
       "newContact": "새 연락처",

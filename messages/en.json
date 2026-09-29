@@ -79,7 +79,12 @@
       "newTodayVsYesterday": "new today vs yesterday",
       "vsYesterday": "vs yesterday",
       "openDeals": "{count} open {count, plural, =1 {deal} other {deals}}",
-      "noChange": "No change {suffix}"
+      "noChange": "No change {suffix}",
+      "campaignLimit": "Campaign Limit",
+      "campaignLimitNotConnected": "Not Connected",
+      "qualityHigh": "High Quality",
+      "qualityMedium": "Medium Quality",
+      "qualityLow": "Low Quality"
     },
     "quickActions": {
       "newContact": "New Contact",

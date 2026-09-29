@@ -79,7 +79,12 @@
       "newTodayVsYesterday": "novos hoje vs. ontem",
       "vsYesterday": "vs. ontem",
       "openDeals": "{count} {count, plural, =1 {negócio aberto} other {negócios abertos}}",
-      "noChange": "Sem alteração {suffix}"
+      "noChange": "Sem alteração {suffix}",
+      "campaignLimit": "Limite de envios",
+      "campaignLimitNotConnected": "Não conectado",
+      "qualityHigh": "Alta qualidade",
+      "qualityMedium": "Qualidade média",
+      "qualityLow": "Baixa qualidade"
     },
     "quickActions": {
       "newContact": "Novo contato",
