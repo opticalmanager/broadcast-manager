@@ -164,7 +164,6 @@ export function WhatsAppConfig() {
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
         setAccessToken(MASKED_TOKEN);
-        setVerifyToken('');
         setPin('');
         setTokenEdited(false);
         // Undefined on a row read before migration 039 — treat that as
@@ -188,6 +187,10 @@ export function WhatsAppConfig() {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
           const payload = await res.json();
+
+          if (payload.verify_token) {
+            setVerifyToken(payload.verify_token);
+          }
 
           if (payload.connected) {
             setConnectionStatus('connected');
@@ -382,6 +385,10 @@ export function WhatsAppConfig() {
         // re-register (which would void the active subscription if
         // the PIN became stale).
         setPin('');
+      }
+
+      if (data.verify_token) {
+        setVerifyToken(data.verify_token);
       }
 
       if (accountId) await fetchConfig(accountId);

@@ -126,7 +126,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, waba_id, access_token, status')
+      .select('phone_number_id, waba_id, access_token, verify_token, status')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -149,6 +149,15 @@ export async function GET() {
       )
     }
 
+    let decryptedVerifyToken: string | null = null
+    if (config.verify_token) {
+      try {
+        decryptedVerifyToken = decrypt(config.verify_token)
+      } catch (err) {
+        console.error('[whatsapp/config GET] verify_token decryption failed:', err)
+      }
+    }
+
     // Try to decrypt the stored token with the current ENCRYPTION_KEY.
     // If this fails, the key changed (or was never consistent across envs).
     let accessToken: string
@@ -161,6 +170,7 @@ export async function GET() {
           connected: false,
           reason: 'token_corrupted',
           needs_reset: true,
+          verify_token: decryptedVerifyToken,
           message:
             'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. This usually means the key changed, or it differs between environments (local vs Hostinger vs Vercel). Click "Reset Configuration" below, then re-save.',
         },
@@ -185,6 +195,7 @@ export async function GET() {
         {
           connected: false,
           reason: 'meta_api_error',
+          verify_token: decryptedVerifyToken,
           message: explained.summary,
           meta: metaErrorPayload(explained),
         },
@@ -227,6 +238,7 @@ export async function GET() {
       connected: true,
       phone_info: phoneInfo,
       waba_subscription: wabaSubscription,
+      verify_token: decryptedVerifyToken,
     })
   } catch (error) {
     console.error('Error in WhatsApp config GET:', error)
@@ -413,7 +425,7 @@ export async function POST(request: Request) {
     // /register when the user didn't provide a PIN this time around.
     const { data: existing } = await supabase
       .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
+      .select('id, registered_at, phone_number_id, verify_token')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -501,7 +513,7 @@ export async function POST(request: Request) {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
-      verify_token: encryptedVerifyToken,
+      verify_token: encryptedVerifyToken ?? existing?.verify_token ?? null,
       status: registrationError ? 'disconnected' : 'connected',
       connected_at: registrationError ? null : new Date().toISOString(),
       registered_at: registrationError ? null : registeredAt,
@@ -545,6 +557,15 @@ export async function POST(request: Request) {
       }
     }
 
+    let returnedVerifyToken = verify_token || null
+    if (!returnedVerifyToken && baseRow.verify_token) {
+      try {
+        returnedVerifyToken = decrypt(baseRow.verify_token)
+      } catch {
+        returnedVerifyToken = null
+      }
+    }
+
     if (registrationError) {
       // Save succeeded but the number isn't actually live. Return
       // 200 with a structured error so the UI can show the specific
@@ -557,6 +578,7 @@ export async function POST(request: Request) {
         error: registrationError,
         meta: registrationMeta,
         phone_info: phoneInfo,
+        verify_token: returnedVerifyToken,
       })
     }
 
@@ -570,6 +592,7 @@ export async function POST(request: Request) {
       // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
       phone_info: phoneInfo,
+      verify_token: returnedVerifyToken,
     })
   } catch (error) {
     console.error('Error in WhatsApp config POST:', error)
