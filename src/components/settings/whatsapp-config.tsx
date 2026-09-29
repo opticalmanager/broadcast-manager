@@ -6,6 +6,7 @@ import {
   Eye,
   EyeOff,
   Copy,
+  Sparkles,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -236,6 +237,14 @@ export function WhatsAppConfig() {
     loadedAccountIdRef.current = accountId;
     fetchConfig(accountId);
   }, [authLoading, profileLoading, user?.id, accountId, fetchConfig]);
+
+  const handleGenerateVerifyToken = useCallback(() => {
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    const token = Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+    setVerifyToken(token);
+    toast.success(t('verifyTokenGenerated'));
+  }, [t]);
 
   async function handleToggleMirrorMedia(next: boolean) {
     if (!config || !accountId || savingMirror) return;
@@ -795,13 +804,38 @@ export function WhatsAppConfig() {
             </div>
 
             <div className="space-y-2">
-              <Label className="text-muted-foreground">{t('webhookVerifyToken')}</Label>
-              <Input
-                placeholder={t('webhookVerifyTokenPlaceholder')}
-                value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
-              />
+              <div className="flex items-center justify-between">
+                <Label className="text-muted-foreground">{t('webhookVerifyToken')}</Label>
+                <button
+                  type="button"
+                  onClick={handleGenerateVerifyToken}
+                  className="text-xs text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <Sparkles className="size-3" />
+                  {t('generateVerifyToken')}
+                </button>
+              </div>
+              <div className="relative">
+                <Input
+                  placeholder={t('webhookVerifyTokenPlaceholder')}
+                  value={verifyToken}
+                  onChange={(e) => setVerifyToken(e.target.value)}
+                  className={`bg-muted border-border text-foreground placeholder:text-muted-foreground ${verifyToken ? 'pr-10' : ''}`}
+                />
+                {verifyToken && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(verifyToken);
+                      toast.success(t('verifyTokenCopied'));
+                    }}
+                    title={t('verifyTokenCopied')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-1"
+                  >
+                    <Copy className="size-4" />
+                  </button>
+                )}
+              </div>
               <p className="text-xs text-muted-foreground">
                 {t('webhookVerifyTokenHint')}
               </p>
