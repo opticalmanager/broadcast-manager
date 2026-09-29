@@ -41,12 +41,7 @@ echo "Building production Next.js application..."
 npm run build
 
 echo "Restarting application with PM2..."
-if pm2 list | grep -q "broadcast-manager"; then
-    pm2 reload broadcast-manager --update-env
-else
-    pm2 start npm --name "broadcast-manager" -- start
-fi
-
+pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
 pm2 save
 
 echo "=================================================="

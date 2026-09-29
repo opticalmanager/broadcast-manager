@@ -323,11 +323,14 @@ export function WhatsAppConfig() {
       });
 
       let data: any = {};
+      const resClone = res.clone();
       try {
         data = await res.json();
       } catch {
-        const text = await res.text().catch(() => '');
-        data = { error: text || `Server returned HTTP ${res.status}` };
+        const text = await resClone.text().catch(() => '');
+        const match = text.match(/<title>(.*?)<\/title>/i) || text.match(/<h1>(.*?)<\/h1>/i);
+        const errorMsg = match ? `${match[1]} (HTTP ${res.status})` : (text.slice(0, 150) || `Server returned HTTP ${res.status}`);
+        data = { error: errorMsg };
       }
 
       if (!res.ok) {

@@ -74,9 +74,13 @@ function metaFailure(err: unknown, step: MetaConnectStep, ctx: MetaErrorContext)
     subcode: explained.subcode,
     fbtrace_id: explained.fbtraceId,
   })
+  // Avoid returning HTTP 502 from application API routes: reverse proxies (Nginx, Cloudflare, ALB)
+  // intercept 502 Bad Gateway and replace the JSON error body with their own generic HTML page,
+  // which hides the actual error reason from the user. We map 502 to 422 (Unprocessable Entity).
+  const status = explained.httpStatus === 502 ? 422 : explained.httpStatus
   return NextResponse.json(
     { error: explained.summary, meta: metaErrorPayload(explained) },
-    { status: explained.httpStatus },
+    { status },
   )
 }
 
