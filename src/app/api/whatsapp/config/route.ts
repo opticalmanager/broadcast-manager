@@ -61,6 +61,17 @@ function supabaseAdmin() {
   return _adminClient
 }
 
+interface CachedMetaStatus {
+  phoneInfo: any
+  wabaSubscription: any
+  timestamp: number
+}
+
+// In-memory cache keyed by accountId:phone_number_id to avoid hitting Meta rate limits
+const configStatusCache = new Map<string, CachedMetaStatus>()
+const CACHE_TTL_MS = 2 * 60 * 1000 // 2 minutes
+
+
 /**
  * Shape every failed Meta call into `{ error, meta }` — the actionable
  * text plus the code / subcode / fbtrace_id / step a user can quote to
@@ -178,29 +189,45 @@ export async function GET() {
       )
     }
 
-    // Validate credentials against Meta
-    let phoneInfo
-    try {
-      phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-      })
-    } catch (err) {
-      const explained = explainMetaError(err, 'verify_number', {
-        phoneNumberId: config.phone_number_id,
-        wabaId: config.waba_id,
-      })
-      console.error('[whatsapp/config GET] Meta API verification failed:', explained.metaMessage)
-      return NextResponse.json(
-        {
-          connected: false,
-          reason: 'meta_api_error',
-          verify_token: decryptedVerifyToken,
-          message: explained.summary,
-          meta: metaErrorPayload(explained),
-        },
-        { status: 200 }
-      )
+    // Check in-memory cache first to avoid hitting Meta rate limits
+    const cacheKey = `${accountId}:${config.phone_number_id}`
+    const cached = configStatusCache.get(cacheKey)
+    const isCacheFresh = !!cached && Date.now() - cached.timestamp < CACHE_TTL_MS
+
+    let phoneInfo = isCacheFresh ? cached.phoneInfo : null
+    let wabaSubscription = isCacheFresh ? cached.wabaSubscription : null
+
+    if (!phoneInfo) {
+      // Validate credentials against Meta
+      try {
+        phoneInfo = await verifyPhoneNumber({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+        })
+      } catch (err) {
+        // If Meta throttles ("too many calls") or has temporary error but we have cached info, serve it
+        if (cached?.phoneInfo) {
+          console.warn('[whatsapp/config GET] Meta verification throttled/failed, serving cached info.')
+          phoneInfo = cached.phoneInfo
+          wabaSubscription = cached.wabaSubscription
+        } else {
+          const explained = explainMetaError(err, 'verify_number', {
+            phoneNumberId: config.phone_number_id,
+            wabaId: config.waba_id,
+          })
+          console.error('[whatsapp/config GET] Meta API verification failed:', explained.metaMessage)
+          return NextResponse.json(
+            {
+              connected: false,
+              reason: 'meta_api_error',
+              verify_token: decryptedVerifyToken,
+              message: explained.summary,
+              meta: metaErrorPayload(explained),
+            },
+            { status: 200 }
+          )
+        }
+      }
     }
 
     // Credentials work. Also report whether the WABA is subscribed to
@@ -208,30 +235,39 @@ export async function GET() {
     // the "connected but no messages arrive" state (issue #505). Never
     // fatal: the token may lack whatsapp_business_management and still
     // be fine for sending.
-    let wabaSubscription: {
-      checked: boolean
-      subscribed: boolean | null
-      app_id_match: boolean | null
-      error?: string
-    } = { checked: false, subscribed: null, app_id_match: null }
-    if (config.waba_id) {
-      try {
-        const subs = await getSubscribedApps({ wabaId: config.waba_id, accessToken })
-        const state = appSubscriptionState(subs, process.env.META_APP_ID)
-        wabaSubscription = {
-          checked: true,
-          subscribed: state.subscribed,
-          app_id_match: state.appIdMatch,
-        }
-      } catch (err) {
-        const explained = explainMetaError(err, 'subscribed_apps', { wabaId: config.waba_id })
-        wabaSubscription = {
-          checked: true,
-          subscribed: null,
-          app_id_match: null,
-          error: explained.summary,
+    if (!wabaSubscription) {
+      wabaSubscription = {
+        checked: false,
+        subscribed: null,
+        app_id_match: null,
+      }
+      if (config.waba_id) {
+        try {
+          const subs = await getSubscribedApps({ wabaId: config.waba_id, accessToken })
+          const state = appSubscriptionState(subs, process.env.META_APP_ID)
+          wabaSubscription = {
+            checked: true,
+            subscribed: state.subscribed,
+            app_id_match: state.appIdMatch,
+          }
+        } catch (err) {
+          const explained = explainMetaError(err, 'subscribed_apps', { wabaId: config.waba_id })
+          wabaSubscription = {
+            checked: true,
+            subscribed: null,
+            app_id_match: null,
+            error: explained.summary,
+          }
         }
       }
+    }
+
+    if (phoneInfo) {
+      configStatusCache.set(cacheKey, {
+        phoneInfo,
+        wabaSubscription,
+        timestamp: Date.now(),
+      })
     }
 
     return NextResponse.json({
@@ -582,6 +618,9 @@ export async function POST(request: Request) {
       })
     }
 
+    // Clear cache so UI reflects freshly saved status immediately
+    configStatusCache.delete(`${accountId}:${phone_number_id}`)
+
     return NextResponse.json({
       success: true,
       saved: true,
@@ -641,6 +680,7 @@ export async function DELETE() {
       )
     }
 
+    configStatusCache.clear()
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('Error in WhatsApp config DELETE:', error)

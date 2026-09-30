@@ -80,7 +80,7 @@ const TOKEN_HINT =
   'with the whatsapp_business_management and whatsapp_business_messaging permissions, ' +
   'and paste it into Permanent Access Token.'
 
-const RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80007, 130429, 131048, 131056])
+const RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80004, 80007, 130429, 131048, 131056])
 const TEMPORARY_CODES = new Set([1, 2, 131000, 133004, 133016])
 
 function isMetaErrorLike(err: unknown): err is MetaErrorLike {
@@ -290,10 +290,9 @@ export function explainMetaError(
   }
 
   // --- Throttling / transient ------------------------------------------------
-  if (RATE_LIMIT_CODES.has(code ?? -1)) {
+  if (RATE_LIMIT_CODES.has(code ?? -1) || /too many calls/i.test(err.message)) {
     return build(
-      'Meta is rate-limiting this app or WhatsApp Business Account right now. Nothing needs ' +
-        'changing — wait a few minutes and try again.',
+      'Meta is temporarily rate-limiting calls from this app ("too many calls"). Nothing is broken — wait a few minutes and it will reset automatically.',
       null,
       'meta',
     )
