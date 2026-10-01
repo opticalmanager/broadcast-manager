@@ -342,6 +342,7 @@
         "email": "E-mail",
         "company": "Empresa",
         "tags": "Tags",
+        "lastCampaign": "Última campanha",
         "createdAt": "Criado em"
       },
       "loading": "Carregando contatos...",
@@ -786,7 +787,13 @@
         "errorCsvParse": "Não foi possível ler o arquivo CSV.",
         "errorCsvMissingPhone": "O CSV deve ter uma coluna 'phone'.",
         "audienceSummary": "Resumo do público",
-        "calculating": "Calculando…"
+        "calculating": "Calculando…",
+        "smartRulesTitle": "Regras inteligentes contra duplicação",
+        "excludeAlreadySentTitle": "Excluir contatos que já receberam este modelo",
+        "excludeAlreadySentDesc": "Envie apenas para contatos que nunca receberam este modelo específico, evitando mensagens duplicadas e reduzindo custos.",
+        "excludeFailedTitle": "Excluir também tentativas anteriores com falha",
+        "excludeFailedDesc": "Ignore números onde o envio anterior falhou para evitar custos desnecessários.",
+        "dedupDeduction": "({count} contatos duplicados excluídos)"
       },
       "personalize": {
         "title": "Personalizar variáveis",

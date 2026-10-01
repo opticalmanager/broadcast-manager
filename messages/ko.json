@@ -342,6 +342,7 @@
         "email": "이메일",
         "company": "회사",
         "tags": "태그",
+        "lastCampaign": "최근 캠페인",
         "createdAt": "생성일"
       },
       "loading": "연락처를 불러오는 중...",
@@ -786,7 +787,13 @@
         "errorCsvParse": "CSV 파일을 파싱할 수 없습니다.",
         "errorCsvMissingPhone": "CSV에 'phone' 열이 있어야 합니다.",
         "audienceSummary": "대상 요약",
-        "calculating": "계산 중…"
+        "calculating": "계산 중…",
+        "smartRulesTitle": "스마트 중복 방지 및 스팸 방지 규칙",
+        "excludeAlreadySentTitle": "이 템플릿을 이미 수신한 연락처 제외",
+        "excludeAlreadySentDesc": "이 특정 템플릿을 한 번도 받지 않은 연락처에만 발송하여 중복 메시지와 WhatsApp 비용을 절감합니다.",
+        "excludeFailedTitle": "이전에 발송 실패한 시도도 제외",
+        "excludeFailedDesc": "이 템플릿 발송에 실패했던 번호를 건너뛰어 불필요한 비용 및 연결 불가 번호 재시도를 방지합니다.",
+        "dedupDeduction": "({count}개 중복 수신자 제외됨)"
       },
       "personalize": {
         "title": "변수 개인화",

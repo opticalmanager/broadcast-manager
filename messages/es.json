@@ -342,6 +342,7 @@
         "email": "Correo",
         "company": "Empresa",
         "tags": "Etiquetas",
+        "lastCampaign": "Última campaña",
         "createdAt": "Creado"
       },
       "loading": "Cargando contactos...",
@@ -786,7 +787,13 @@
         "errorCsvParse": "No se pudo leer el archivo CSV.",
         "errorCsvMissingPhone": "El CSV debe tener una columna 'phone'.",
         "audienceSummary": "Resumen de la audiencia",
-        "calculating": "Calculando…"
+        "calculating": "Calculando…",
+        "smartRulesTitle": "Reglas inteligentes contra duplicados",
+        "excludeAlreadySentTitle": "Excluir contactos que ya recibieron esta plantilla",
+        "excludeAlreadySentDesc": "Solo envía a contactos que nunca hayan recibido esta plantilla, evitando mensajes duplicados y reduciendo costos.",
+        "excludeFailedTitle": "Excluir también intentos fallidos anteriores",
+        "excludeFailedDesc": "Omite números donde el envío anterior de esta plantilla falló para no reintentar números inaccesibles.",
+        "dedupDeduction": "({count} contactos duplicados excluidos)"
       },
       "personalize": {
         "title": "Personalizar variables",

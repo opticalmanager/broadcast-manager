@@ -342,6 +342,7 @@
         "email": "Email",
         "company": "Company",
         "tags": "Tags",
+        "lastCampaign": "Last Campaign",
         "createdAt": "Created"
       },
       "loading": "Loading contacts...",
@@ -786,7 +787,13 @@
         "errorCsvParse": "Could not parse CSV file.",
         "errorCsvMissingPhone": "CSV must have a 'phone' column.",
         "audienceSummary": "Audience Summary",
-        "calculating": "Calculating…"
+        "calculating": "Calculating…",
+        "smartRulesTitle": "Smart De-Duplication & Anti-Spam",
+        "excludeAlreadySentTitle": "Exclude contacts who already received this template",
+        "excludeAlreadySentDesc": "Only send to contacts who have never received this specific template, preventing duplicate messages and reducing WhatsApp messaging costs.",
+        "excludeFailedTitle": "Also exclude previous failed attempts",
+        "excludeFailedDesc": "Skip phone numbers where previous delivery of this template failed to avoid retrying unreachable numbers.",
+        "dedupDeduction": "({count} duplicate recipients excluded)"
       },
       "personalize": {
         "title": "Personalize Variables",

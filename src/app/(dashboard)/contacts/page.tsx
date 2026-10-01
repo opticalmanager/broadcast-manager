@@ -57,12 +57,23 @@ import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
+import { formatRelativeCampaignTime } from '@/lib/broadcast-dedup';
 
 const PAGE_SIZE = 25;
 
+interface ContactCampaignInfo {
+  sentAt: string;
+  broadcastName: string;
+  templateName: string;
+  status: string;
+}
+
 interface ContactWithTags extends Contact {
   tags?: Tag[];
+  lastCampaign?: ContactCampaignInfo | null;
 }
+
+const formatRelativeTime = formatRelativeCampaignTime;
 
 export default function ContactsPage() {
   const t = useTranslations('Contacts.page');
@@ -184,18 +195,39 @@ export default function ContactsPage() {
       return;
     }
 
-    // Fetch tags for these contacts
+    // Fetch tags & last broadcast campaign for these contacts in parallel
     const contactIds = contactRows.map((c) => c.id);
-    const { data: contactTags } = await supabase
-      .from('contact_tags')
-      .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
+    const [tagsResult, campaignsResult] = await Promise.all([
+      supabase
+        .from('contact_tags')
+        .select('contact_id, tag_id')
+        .in('contact_id', contactIds),
+      supabase
+        .from('broadcast_recipients')
+        .select('contact_id, sent_at, created_at, status, broadcasts(name, template_name)')
+        .in('contact_id', contactIds)
+        .in('status', ['sent', 'delivered', 'read', 'replied'])
+        .order('created_at', { ascending: false }),
+    ]);
     if (seq !== fetchSeq.current) return; // superseded by a newer fetch
 
     const tagsByContact: Record<string, string[]> = {};
-    contactTags?.forEach((ct) => {
+    tagsResult.data?.forEach((ct) => {
       if (!tagsByContact[ct.contact_id]) tagsByContact[ct.contact_id] = [];
       tagsByContact[ct.contact_id].push(ct.tag_id);
+    });
+
+    const lastCampaignByContact: Record<string, ContactCampaignInfo> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    campaignsResult.data?.forEach((row: any) => {
+      if (!lastCampaignByContact[row.contact_id]) {
+        lastCampaignByContact[row.contact_id] = {
+          sentAt: row.sent_at || row.created_at,
+          broadcastName: row.broadcasts?.name || 'Broadcast',
+          templateName: row.broadcasts?.template_name || '',
+          status: row.status,
+        };
+      }
     });
 
     const enriched: ContactWithTags[] = contactRows.map((c) => ({
@@ -203,6 +235,7 @@ export default function ContactsPage() {
       tags: (tagsByContact[c.id] ?? [])
         .map((tid) => tagsMap[tid])
         .filter(Boolean),
+      lastCampaign: lastCampaignByContact[c.id] ?? null,
     }));
 
     setContacts(enriched);
@@ -546,6 +579,7 @@ export default function ContactsPage() {
               <TableHead className="text-muted-foreground hidden md:table-cell">{t('tableColumns.email')}</TableHead>
               <TableHead className="text-muted-foreground hidden lg:table-cell">{t('tableColumns.company')}</TableHead>
               <TableHead className="text-muted-foreground hidden md:table-cell">{t('tableColumns.tags')}</TableHead>
+              <TableHead className="text-muted-foreground hidden sm:table-cell">{t('tableColumns.lastCampaign')}</TableHead>
               <TableHead className="text-muted-foreground hidden lg:table-cell">{t('tableColumns.createdAt')}</TableHead>
               <TableHead className="text-muted-foreground w-12" />
             </TableRow>
@@ -553,7 +587,7 @@ export default function ContactsPage() {
           <TableBody>
             {loading ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="text-center py-12">
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 className="size-6 animate-spin text-primary" />
                     <p className="text-sm text-muted-foreground">{t('loading')}</p>
@@ -562,7 +596,7 @@ export default function ContactsPage() {
               </TableRow>
             ) : contacts.length === 0 ? (
               <TableRow className="border-border">
-                <TableCell colSpan={8} className="text-center py-12">
+                <TableCell colSpan={9} className="text-center py-12">
                   <div className="flex flex-col items-center gap-2">
                     <Users className="size-8 text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">
@@ -636,6 +670,23 @@ export default function ContactsPage() {
                         </span>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs hidden sm:table-cell">
+                    {contact.lastCampaign ? (
+                      <span
+                        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-muted/60 text-foreground font-medium text-[11px] cursor-help transition-colors hover:bg-muted"
+                        title={`Campaign: ${contact.lastCampaign.broadcastName}\nTemplate: ${contact.lastCampaign.templateName}\nSent: ${new Date(contact.lastCampaign.sentAt).toLocaleString()}\nStatus: ${contact.lastCampaign.status}`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                            contact.lastCampaign.status === 'failed' ? 'bg-destructive' : 'bg-emerald-500'
+                          }`}
+                        />
+                        {formatRelativeTime(contact.lastCampaign.sentAt)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/50 text-xs italic">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-xs hidden lg:table-cell">
                     {new Date(contact.created_at).toLocaleDateString('en-US', {

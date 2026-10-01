@@ -3,8 +3,9 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { parseBroadcastCsv } from '@/lib/broadcast-csv';
-import { CustomField, Tag } from '@/types';
+import { CustomField, Tag, MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import {
   Users,
@@ -16,6 +17,7 @@ import {
   ArrowRight,
   ArrowLeft,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -28,12 +30,14 @@ interface CustomFieldFilter {
   value: string;
 }
 
-interface AudienceConfig {
+export interface AudienceConfig {
   type: AudienceType;
   tagIds?: string[];
   customField?: CustomFieldFilter;
   csvContacts?: { phone: string; name?: string }[];
   excludeTagIds?: string[];
+  excludeAlreadySentThisTemplate?: boolean;
+  excludeFailedSends?: boolean;
 }
 
 interface Step2Props {
@@ -41,6 +45,7 @@ interface Step2Props {
   onUpdate: (audience: AudienceConfig) => void;
   onNext: () => void;
   onBack: () => void;
+  template?: MessageTemplate | null;
 }
 
 export function Step2SelectAudience({
@@ -48,6 +53,7 @@ export function Step2SelectAudience({
   onUpdate,
   onNext,
   onBack,
+  template,
 }: Step2Props) {
   const t = useTranslations('Broadcasts.wizard');
 
@@ -93,6 +99,7 @@ export function Step2SelectAudience({
   const [loadingTags, setLoadingTags] = useState(false);
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
+  const [dedupCount, setDedupCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
   // The picked file's name, shown back to the user. The parsed rows
   // themselves live on `audience.csvContacts` (owned by the wizard) so
@@ -180,11 +187,11 @@ export function Step2SelectAudience({
         audience.csvContacts &&
         audience.csvContacts.length > 0
       ) {
-        setEstimatedCount(audience.csvContacts.length);
-        return;
+        baseIds = null;
       } else {
         // Partially-configured audience — wait for the user to finish.
         setEstimatedCount(null);
+        setDedupCount(null);
         return;
       }
 
@@ -198,18 +205,83 @@ export function Step2SelectAudience({
         excludeSet = new Set((excludeRows ?? []).map((r) => r.contact_id));
       }
 
+      // Check smart template deduplication
+      const dedupExcludeSet = new Set<string>();
+      if (audience.excludeAlreadySentThisTemplate && template?.name) {
+        const { data: pastBroadcasts } = await supabase
+          .from('broadcasts')
+          .select('id')
+          .eq('template_name', template.name);
+
+        if (pastBroadcasts && pastBroadcasts.length > 0) {
+          const pastIds = pastBroadcasts.map((b) => b.id);
+          let q = supabase
+            .from('broadcast_recipients')
+            .select('contact_id')
+            .in('broadcast_id', pastIds);
+          if (!audience.excludeFailedSends) {
+            q = q.neq('status', 'failed');
+          }
+          const { data: pastRecipients } = await q;
+          if (pastRecipients) {
+            for (const r of pastRecipients) {
+              if (r.contact_id) dedupExcludeSet.add(r.contact_id);
+            }
+          }
+        }
+      }
+
+      if (audience.type === 'csv' && audience.csvContacts) {
+        if (audience.excludeAlreadySentThisTemplate && dedupExcludeSet.size > 0) {
+          const { data: matchedContacts } = await supabase
+            .from('contacts')
+            .select('id, phone')
+            .in('id', Array.from(dedupExcludeSet));
+          const excludedPhones = new Set(
+            (matchedContacts ?? [])
+              .map((c) => c.phone?.replace(/\D/g, ''))
+              .filter(Boolean),
+          );
+          const remaining = audience.csvContacts.filter(
+            (c) => !excludedPhones.has(c.phone.replace(/\D/g, '')),
+          );
+          setDedupCount(audience.csvContacts.length - remaining.length);
+          setEstimatedCount(remaining.length);
+        } else {
+          setDedupCount(0);
+          setEstimatedCount(audience.csvContacts.length);
+        }
+        return;
+      }
+
       if (baseIds) {
+        let dedupDeductions = 0;
+        for (const id of baseIds) {
+          if (!excludeSet?.has(id) && dedupExcludeSet.has(id)) {
+            dedupDeductions++;
+          }
+        }
+        setDedupCount(dedupDeductions);
         const effective = [...baseIds].filter(
-          (id) => !excludeSet?.has(id),
+          (id) => !excludeSet?.has(id) && !dedupExcludeSet.has(id),
         );
         setEstimatedCount(effective.length);
       } else {
-        // "All" — fetch the total, then subtract exclude set if any.
+        // "All" — fetch the total, then subtract combined exclude set.
+        const combinedExclude = new Set<string>([
+          ...(excludeSet ? Array.from(excludeSet) : []),
+          ...Array.from(dedupExcludeSet),
+        ]);
         const { count } = await supabase
           .from('contacts')
           .select('*', { count: 'exact', head: true });
         const total = count ?? 0;
-        setEstimatedCount(excludeSet ? Math.max(0, total - excludeSet.size) : total);
+        let dedupOnly = 0;
+        for (const id of dedupExcludeSet) {
+          if (!excludeSet?.has(id)) dedupOnly++;
+        }
+        setDedupCount(dedupOnly);
+        setEstimatedCount(Math.max(0, total - combinedExclude.size));
       }
     } finally {
       setLoadingCount(false);
@@ -220,6 +292,9 @@ export function Step2SelectAudience({
     audience.customField,
     audience.csvContacts,
     audience.excludeTagIds,
+    audience.excludeAlreadySentThisTemplate,
+    audience.excludeFailedSends,
+    template?.name,
   ]);
 
   useEffect(() => {
@@ -516,6 +591,57 @@ export function Step2SelectAudience({
         )}
       </div>
 
+      {/* Smart De-Duplication & Anti-Spam */}
+      <div className="rounded-xl border border-border bg-card/50 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-500 shrink-0" />
+              <p className="text-sm font-medium text-foreground">
+                {t('selectAudience.smartRulesTitle')}
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.excludeAlreadySentDesc')}
+            </p>
+          </div>
+          <Switch
+            checked={!!audience.excludeAlreadySentThisTemplate}
+            onCheckedChange={(checked) =>
+              onUpdate({
+                ...audience,
+                excludeAlreadySentThisTemplate: checked,
+                excludeFailedSends: checked ? audience.excludeFailedSends : false,
+              })
+            }
+            aria-label={t('selectAudience.excludeAlreadySentTitle')}
+          />
+        </div>
+
+        {audience.excludeAlreadySentThisTemplate && (
+          <div className="pt-3 border-t border-border/50 flex items-start justify-between gap-4 pl-6">
+            <div className="space-y-0.5">
+              <p className="text-xs font-medium text-foreground">
+                {t('selectAudience.excludeFailedTitle')}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                {t('selectAudience.excludeFailedDesc')}
+              </p>
+            </div>
+            <Switch
+              checked={!!audience.excludeFailedSends}
+              onCheckedChange={(checked) =>
+                onUpdate({
+                  ...audience,
+                  excludeFailedSends: checked,
+                })
+              }
+              aria-label={t('selectAudience.excludeFailedTitle')}
+            />
+          </div>
+        )}
+      </div>
+
       {/* Audience Summary */}
       <div className="rounded-xl border border-border bg-card/50 p-4">
         <p className="mb-2 text-sm font-medium text-foreground">{t('selectAudience.audienceSummary')}</p>
@@ -525,12 +651,17 @@ export function Step2SelectAudience({
             <span className="text-xs text-muted-foreground">{t('selectAudience.calculating')}</span>
           </div>
         ) : estimatedCount !== null ? (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Users className="h-4 w-4 text-primary" />
-            <span className="text-sm text-foreground">
+            <span className="text-sm text-foreground font-semibold">
               {estimatedCount.toLocaleString()}
             </span>
             <span className="text-xs text-muted-foreground">estimated recipients</span>
+            {dedupCount !== null && dedupCount > 0 && audience.excludeAlreadySentThisTemplate && (
+              <span className="text-xs text-emerald-500 font-medium">
+                {t('selectAudience.dedupDeduction', { count: dedupCount })}
+              </span>
+            )}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">

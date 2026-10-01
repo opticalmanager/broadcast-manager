@@ -8,6 +8,7 @@ import {
   batchRetryDelayMs,
 } from '@/lib/broadcast-retry';
 import { normalizeKey } from '@/lib/contacts/dedupe';
+import { filterAlreadySentContacts } from '@/lib/broadcast-dedup';
 import { Contact, MessageTemplate } from '@/types';
 
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -25,6 +26,10 @@ export interface AudienceConfig {
   csvContacts?: { phone: string; name?: string }[];
   /** Contacts carrying any of these tags are subtracted from the result. */
   excludeTagIds?: string[];
+  /** Exclude contacts who have already received this template */
+  excludeAlreadySentThisTemplate?: boolean;
+  /** When excluding already-sent, also exclude failed sends */
+  excludeFailedSends?: boolean;
 }
 
 /**
@@ -162,7 +167,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  async function resolveAudience(audience: AudienceConfig): Promise<Contact[]> {
+  async function resolveAudience(
+    audience: AudienceConfig,
+    templateName?: string,
+  ): Promise<Contact[]> {
     const supabase = createClient();
 
     let contacts: Contact[] = [];
@@ -210,6 +218,30 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         .in('tag_id', audience.excludeTagIds);
       const excludedIds = new Set((excludeRows ?? []).map((r) => r.contact_id));
       contacts = contacts.filter((c) => !excludedIds.has(c.id));
+    }
+
+    // Apply smart template de-duplication if enabled:
+    // Exclude contacts who have already received this template in this account.
+    if (audience.excludeAlreadySentThisTemplate && templateName && accountId) {
+      const { data: pastBroadcasts } = await supabase
+        .from('broadcasts')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('template_name', templateName);
+
+      if (pastBroadcasts && pastBroadcasts.length > 0) {
+        const pastIds = pastBroadcasts.map((b) => b.id);
+        const { data: pastRecipients } = await supabase
+          .from('broadcast_recipients')
+          .select('contact_id, status')
+          .in('broadcast_id', pastIds);
+
+        if (pastRecipients && pastRecipients.length > 0) {
+          contacts = filterAlreadySentContacts(contacts, pastRecipients, {
+            excludeFailed: audience.excludeFailedSends,
+          });
+        }
+      }
     }
 
     return contacts;
@@ -369,7 +401,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
       // ── Step 1: Resolve audience contacts ─────────────────────────
       setProgress(5);
-      const contacts = await resolveAudience(payload.audience);
+      const contacts = await resolveAudience(
+        payload.audience,
+        payload.template.name,
+      );
 
       if (contacts.length === 0) {
         throw new Error('No contacts found for this audience.');
@@ -391,6 +426,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             tagIds: payload.audience.tagIds,
             customField: payload.audience.customField,
             excludeTagIds: payload.audience.excludeTagIds,
+            excludeAlreadySentThisTemplate: payload.audience.excludeAlreadySentThisTemplate,
+            excludeFailedSends: payload.audience.excludeFailedSends,
           },
           status: 'sending',
           total_recipients: contacts.length,
