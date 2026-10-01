@@ -11,6 +11,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
+        NODE_OPTIONS: '--max-http-header-size=32768',
       },
     },
   ],
