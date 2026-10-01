@@ -20,25 +20,16 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
+import {
+  calculateAudienceReach,
+  AudienceConfig,
+  AudienceType,
+  CustomFieldFilter,
+  CustomFieldOperator,
+} from '@/lib/broadcast-audience';
 
-type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
-type CustomFieldOperator = 'is' | 'is_not' | 'contains';
-
-interface CustomFieldFilter {
-  fieldId: string;
-  operator: CustomFieldOperator;
-  value: string;
-}
-
-export interface AudienceConfig {
-  type: AudienceType;
-  tagIds?: string[];
-  customField?: CustomFieldFilter;
-  csvContacts?: { phone: string; name?: string }[];
-  excludeTagIds?: string[];
-  excludeAlreadySentThisTemplate?: boolean;
-  excludeFailedSends?: boolean;
-}
+export type { AudienceConfig, AudienceType, CustomFieldFilter, CustomFieldOperator };
 
 interface Step2Props {
   audience: AudienceConfig;
@@ -46,6 +37,7 @@ interface Step2Props {
   onNext: () => void;
   onBack: () => void;
   template?: MessageTemplate | null;
+  onEstimatedReachChange?: (reach: number | null, dedupCount: number | null) => void;
 }
 
 export function Step2SelectAudience({
@@ -54,8 +46,10 @@ export function Step2SelectAudience({
   onNext,
   onBack,
   template,
+  onEstimatedReachChange,
 }: Step2Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
 
   const OPERATOR_OPTIONS = useMemo<{ value: CustomFieldOperator; label: string }[]>(() => [
     { value: 'is', label: t('selectAudience.operatorIs') },
@@ -148,153 +142,39 @@ export function Step2SelectAudience({
   }, [audience.type]);
 
   const fetchEstimatedCount = useCallback(async () => {
+    // If audience is partially configured, don't show stale estimate
+    if (
+      (audience.type === 'tags' && (!audience.tagIds || audience.tagIds.length === 0)) ||
+      (audience.type === 'custom_field' && (!audience.customField?.fieldId || !audience.customField.value)) ||
+      (audience.type === 'csv' && (!audience.csvContacts || audience.csvContacts.length === 0))
+    ) {
+      setEstimatedCount(null);
+      setDedupCount(null);
+      onEstimatedReachChange?.(null, null);
+      return;
+    }
+
     setLoadingCount(true);
     try {
       const supabase = createClient();
+      const result = await calculateAudienceReach(supabase, audience, {
+        templateName: template?.name,
+        accountId,
+      });
 
-      // Base query — produces the superset before exclude is applied.
-      let baseIds: Set<string> | null = null; // null means "all contacts"
-
-      if (audience.type === 'all') {
-        // Handled below — full-table count adjusted by excludes.
-      } else if (
-        audience.type === 'tags' &&
-        audience.tagIds &&
-        audience.tagIds.length > 0
-      ) {
-        const { data } = await supabase
-          .from('contact_tags')
-          .select('contact_id')
-          .in('tag_id', audience.tagIds);
-        baseIds = new Set((data ?? []).map((r) => r.contact_id));
-      } else if (
-        audience.type === 'custom_field' &&
-        audience.customField?.fieldId &&
-        audience.customField.value
-      ) {
-        const { fieldId, operator, value } = audience.customField;
-        let q = supabase
-          .from('contact_custom_values')
-          .select('contact_id')
-          .eq('custom_field_id', fieldId);
-        if (operator === 'is') q = q.eq('value', value);
-        else if (operator === 'is_not') q = q.neq('value', value);
-        else q = q.ilike('value', `%${value}%`);
-        const { data } = await q;
-        baseIds = new Set((data ?? []).map((r) => r.contact_id));
-      } else if (
-        audience.type === 'csv' &&
-        audience.csvContacts &&
-        audience.csvContacts.length > 0
-      ) {
-        baseIds = null;
-      } else {
-        // Partially-configured audience — wait for the user to finish.
-        setEstimatedCount(null);
-        setDedupCount(null);
-        return;
-      }
-
-      // Apply exclude tags
-      let excludeSet: Set<string> | null = null;
-      if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
-        const { data: excludeRows } = await supabase
-          .from('contact_tags')
-          .select('contact_id')
-          .in('tag_id', audience.excludeTagIds);
-        excludeSet = new Set((excludeRows ?? []).map((r) => r.contact_id));
-      }
-
-      // Check smart template deduplication
-      const dedupExcludeSet = new Set<string>();
-      if (audience.excludeAlreadySentThisTemplate && template?.name) {
-        const { data: pastBroadcasts } = await supabase
-          .from('broadcasts')
-          .select('id')
-          .eq('template_name', template.name);
-
-        if (pastBroadcasts && pastBroadcasts.length > 0) {
-          const pastIds = pastBroadcasts.map((b) => b.id);
-          let q = supabase
-            .from('broadcast_recipients')
-            .select('contact_id')
-            .in('broadcast_id', pastIds);
-          if (!audience.excludeFailedSends) {
-            q = q.neq('status', 'failed');
-          }
-          const { data: pastRecipients } = await q;
-          if (pastRecipients) {
-            for (const r of pastRecipients) {
-              if (r.contact_id) dedupExcludeSet.add(r.contact_id);
-            }
-          }
-        }
-      }
-
-      if (audience.type === 'csv' && audience.csvContacts) {
-        if (audience.excludeAlreadySentThisTemplate && dedupExcludeSet.size > 0) {
-          const { data: matchedContacts } = await supabase
-            .from('contacts')
-            .select('id, phone')
-            .in('id', Array.from(dedupExcludeSet));
-          const excludedPhones = new Set(
-            (matchedContacts ?? [])
-              .map((c) => c.phone?.replace(/\D/g, ''))
-              .filter(Boolean),
-          );
-          const remaining = audience.csvContacts.filter(
-            (c) => !excludedPhones.has(c.phone.replace(/\D/g, '')),
-          );
-          setDedupCount(audience.csvContacts.length - remaining.length);
-          setEstimatedCount(remaining.length);
-        } else {
-          setDedupCount(0);
-          setEstimatedCount(audience.csvContacts.length);
-        }
-        return;
-      }
-
-      if (baseIds) {
-        let dedupDeductions = 0;
-        for (const id of baseIds) {
-          if (!excludeSet?.has(id) && dedupExcludeSet.has(id)) {
-            dedupDeductions++;
-          }
-        }
-        setDedupCount(dedupDeductions);
-        const effective = [...baseIds].filter(
-          (id) => !excludeSet?.has(id) && !dedupExcludeSet.has(id),
-        );
-        setEstimatedCount(effective.length);
-      } else {
-        // "All" — fetch the total, then subtract combined exclude set.
-        const combinedExclude = new Set<string>([
-          ...(excludeSet ? Array.from(excludeSet) : []),
-          ...Array.from(dedupExcludeSet),
-        ]);
-        const { count } = await supabase
-          .from('contacts')
-          .select('*', { count: 'exact', head: true });
-        const total = count ?? 0;
-        let dedupOnly = 0;
-        for (const id of dedupExcludeSet) {
-          if (!excludeSet?.has(id)) dedupOnly++;
-        }
-        setDedupCount(dedupOnly);
-        setEstimatedCount(Math.max(0, total - combinedExclude.size));
-      }
+      setEstimatedCount(result.estimatedCount);
+      setDedupCount(result.dedupCount);
+      onEstimatedReachChange?.(result.estimatedCount, result.dedupCount);
+    } catch (err) {
+      console.error('Failed to calculate audience estimate in Step 2:', err);
     } finally {
       setLoadingCount(false);
     }
   }, [
-    audience.type,
-    audience.tagIds,
-    audience.customField,
-    audience.csvContacts,
-    audience.excludeTagIds,
-    audience.excludeAlreadySentThisTemplate,
-    audience.excludeFailedSends,
+    audience,
     template?.name,
+    accountId,
+    onEstimatedReachChange,
   ]);
 
   useEffect(() => {

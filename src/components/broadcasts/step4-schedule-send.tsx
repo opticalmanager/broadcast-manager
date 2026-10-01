@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
 import { MessageTemplate } from '@/types';
+import { calculateAudienceReach, AudienceConfig } from '@/lib/broadcast-audience';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -17,17 +19,13 @@ import {
 import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-interface AudienceConfig {
-  type: string;
-  tagIds?: string[];
-  csvContacts?: { phone: string; name?: string }[];
-}
-
 interface Step4Props {
   name: string;
   onNameChange: (name: string) => void;
   template: MessageTemplate;
   audience: AudienceConfig;
+  initialEstimatedReach?: number | null;
+  initialDedupCount?: number | null;
   onSend: () => void;
   onSaveDraft?: () => void;
   onBack: () => void;
@@ -40,6 +38,8 @@ export function Step4ScheduleSend({
   onNameChange,
   template,
   audience,
+  initialEstimatedReach,
+  initialDedupCount,
   onSend,
   onSaveDraft,
   onBack,
@@ -47,41 +47,47 @@ export function Step4ScheduleSend({
   progress,
 }: Step4Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
   const [showConfirm, setShowConfirm] = useState(false);
-  const [estimatedReach, setEstimatedReach] = useState<number>(0);
-  const [loadingReach, setLoadingReach] = useState(true);
+  const [estimatedReach, setEstimatedReach] = useState<number>(initialEstimatedReach ?? 0);
+  const [dedupCount, setDedupCount] = useState<number>(initialDedupCount ?? 0);
+  const [loadingReach, setLoadingReach] = useState(
+    initialEstimatedReach === undefined || initialEstimatedReach === null,
+  );
 
   useEffect(() => {
+    let cancelled = false;
+
     async function calculateReach() {
-      setLoadingReach(true);
+      if (initialEstimatedReach === undefined || initialEstimatedReach === null) {
+        setLoadingReach(true);
+      }
       try {
         const supabase = createClient();
+        const result = await calculateAudienceReach(supabase, audience, {
+          templateName: template.name,
+          accountId,
+        });
 
-        if (audience.type === 'all') {
-          const { count } = await supabase
-            .from('contacts')
-            .select('*', { count: 'exact', head: true });
-          setEstimatedReach(count ?? 0);
-        } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
-          const { data: contactTags } = await supabase
-            .from('contact_tags')
-            .select('contact_id')
-            .in('tag_id', audience.tagIds);
-
-          const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
-          setEstimatedReach(uniqueIds.size);
-        } else if (audience.type === 'csv' && audience.csvContacts) {
-          setEstimatedReach(audience.csvContacts.length);
-        } else {
-          setEstimatedReach(0);
+        if (!cancelled) {
+          setEstimatedReach(result.estimatedCount);
+          setDedupCount(result.dedupCount);
         }
+      } catch (err) {
+        console.error('Failed to calculate audience reach in Step 4:', err);
       } finally {
-        setLoadingReach(false);
+        if (!cancelled) {
+          setLoadingReach(false);
+        }
       }
     }
 
     calculateReach();
-  }, [audience]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [audience, template.name, accountId, initialEstimatedReach]);
 
   const audienceLabel =
     audience.type === 'all'
@@ -126,13 +132,18 @@ export function Step4ScheduleSend({
           </div>
           <div>
             <p className="text-xs text-muted-foreground">{t('scheduleSend.estimatedReach')}</p>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               {loadingReach ? (
                 <Loader2 className="h-3 w-3 animate-spin text-primary" />
               ) : (
                 <>
                   <Users className="h-3.5 w-3.5 text-primary" />
                   <p className="font-medium text-foreground">{estimatedReach.toLocaleString()}</p>
+                  {dedupCount > 0 && (
+                    <span className="text-xs text-muted-foreground font-normal">
+                      ({dedupCount.toLocaleString()} excluded)
+                    </span>
+                  )}
                 </>
               )}
             </div>

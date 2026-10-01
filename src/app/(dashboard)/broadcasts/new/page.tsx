@@ -39,6 +39,8 @@ export default function NewBroadcastPage() {
   >({});
   const [headerMediaUrl, setHeaderMediaUrl] = useState('');
   const [name, setName] = useState('');
+  const [estimatedReach, setEstimatedReach] = useState<number | null>(null);
+  const [dedupCount, setDedupCount] = useState<number | null>(null);
 
   async function handleSend() {
     if (!template) return;
@@ -193,6 +195,10 @@ export default function NewBroadcastPage() {
               audience={audience}
               onUpdate={setAudience}
               template={template}
+              onEstimatedReachChange={(reach, dedup) => {
+                setEstimatedReach(reach);
+                setDedupCount(dedup);
+              }}
               onNext={() => setCurrentStep(2)}
               onBack={() => setCurrentStep(0)}
             />
@@ -214,6 +220,8 @@ export default function NewBroadcastPage() {
               onNameChange={setName}
               template={template}
               audience={audience}
+              initialEstimatedReach={estimatedReach}
+              initialDedupCount={dedupCount}
               onSend={handleSend}
               onSaveDraft={handleSaveDraft}
               onBack={() => setCurrentStep(2)}
