@@ -259,15 +259,25 @@ export async function createBroadcast(
  * here — only the terminal `status` — otherwise a manual value would
  * race and clobber the trigger-maintained counts.
  */
+function isRateLimitError(msg: string | null): boolean {
+  if (!msg) return false;
+  return /130429|80007|\b429\b|rate limit|too many requests/i.test(msg);
+}
+
 export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
-  const CONCURRENCY = 10;
+  // Paced rate-limiting: 10 recipients per batch with a 1 000 ms pause.
+  // Cadence = ~10 messages/sec. This is well below Meta's 80 msg/sec ceiling,
+  // protecting Phone Number Quality Rating while still processing 1 000
+  // contacts in ~1.5 to 2 minutes.
+  const BATCH_SIZE = 10;
+  const BATCH_DELAY_MS = 1000;
   let templatePaused = false;
   let pauseErrorText: string | null = null;
 
-  for (let idx = 0; idx < plan.planned.length; idx += CONCURRENCY) {
+  for (let idx = 0; idx < plan.planned.length; idx += BATCH_SIZE) {
     if (templatePaused) break;
 
     // Check if the broadcast itself has been paused by the user mid-send
@@ -282,7 +292,7 @@ export async function deliverBroadcast(
       break;
     }
 
-    const chunk = plan.planned.slice(idx, idx + CONCURRENCY);
+    const chunk = plan.planned.slice(idx, idx + BATCH_SIZE);
 
     await Promise.all(
       chunk.map(async (recipient) => {
@@ -309,6 +319,28 @@ export async function deliverBroadcast(
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown error';
             lastError = message;
+
+            // Adaptive backoff: if Meta hits a rate limit, cool down for 3s and retry once
+            if (isRateLimitError(message)) {
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+              try {
+                const retryResult = await sendTemplateMessage({
+                  phoneNumberId: plan.phoneNumberId,
+                  accessToken: plan.accessToken,
+                  to: variant,
+                  templateName: plan.templateName,
+                  language: plan.templateLanguage,
+                  template: plan.templateRow ?? undefined,
+                  params: recipient.params,
+                });
+                sentMessageId = retryResult.messageId;
+                lastError = null;
+                break;
+              } catch (retryErr) {
+                lastError = retryErr instanceof Error ? retryErr.message : 'Rate limit retry failed';
+              }
+            }
+
             // Only a "recipient not allowed" error is worth another variant.
             if (!isRecipientNotAllowedError(message)) break;
           }
@@ -364,7 +396,7 @@ export async function deliverBroadcast(
     if (templatePaused) {
       const errText = pauseErrorText || 'Template is paused by Meta';
       // Mark all remaining planned recipients in this plan as paused
-      const remainingPlanned = plan.planned.slice(idx + CONCURRENCY);
+      const remainingPlanned = plan.planned.slice(idx + BATCH_SIZE);
       if (remainingPlanned.length > 0) {
         const remainingIds = remainingPlanned.map((r) => r.recipientRowId);
         await db
@@ -404,8 +436,8 @@ export async function deliverBroadcast(
       break;
     }
 
-    // Rate-limit buffer between batches of 10: 100ms
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Safe rate-limit pacing buffer between batches of 10: 1 000ms pause (~10 msg/sec)
+    await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
   }
 
   await finalizeBroadcastStatus(db, plan.broadcastId);
