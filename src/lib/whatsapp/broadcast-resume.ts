@@ -56,10 +56,12 @@ export const RESUME_MAX_PER_REQUEST = 1000;
  */
 export const DELIVERY_LOCK_STALE_MS = 30 * 60 * 1000;
 
-function scopeStatuses(scope: ResumeScope): string[] {
+function scopeStatuses(scope: ResumeScope, broadcastStatus?: string): string[] {
   if (scope === 'pending') return ['pending'];
   if (scope === 'failed') return ['failed'];
-  if (scope === 'paused') return ['paused', 'failed'];
+  if (scope === 'paused') {
+    return broadcastStatus === 'paused' ? ['paused', 'failed', 'pending'] : ['paused', 'failed'];
+  }
   return ['pending', 'failed', 'paused'];
 }
 
@@ -164,7 +166,7 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language')
+    .select('id, status, template_name, template_language')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -173,7 +175,19 @@ export async function planBroadcastResume(
     throw new BroadcastError('not_found', 'Broadcast not found', 404);
   }
 
-  const statuses = scopeStatuses(scope);
+  if (broadcast.status === 'paused') {
+    // If the broadcast was paused, ensure all unsent recipients are marked as 'paused'
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'paused',
+        error_message: 'Campaign paused',
+      })
+      .eq('broadcast_id', broadcastId)
+      .eq('status', 'pending');
+  }
+
+  const statuses = scopeStatuses(scope, broadcast.status);
   const { data: rawRows, error: recError } = await db
     .from('broadcast_recipients')
     .select('id, contact_id, status, error_message, template_params, contact:contacts(id, phone)')
@@ -192,12 +206,15 @@ export async function planBroadcastResume(
 
   // Filter candidates according to exact scope:
   // - 'failed': only genuine failures (exclude paused)
-  // - 'paused': only paused (status = 'paused' or failed with pause error)
+  // - 'paused': only paused (status = 'paused', failed with pause error, or pending in paused campaign)
   // - 'pending': only pending
   // - 'all': all
   const candidateRows = rows.filter((r) => {
     if (scope === 'failed') return !isPausedRecipient(r);
-    if (scope === 'paused') return isPausedRecipient(r);
+    if (scope === 'paused') {
+      if (broadcast.status === 'paused' && r.status === 'pending') return true;
+      return isPausedRecipient(r);
+    }
     return true;
   });
 
@@ -296,7 +313,16 @@ export async function planBroadcastResume(
 
   const finalSendable = deduplicatedSendable;
   const slice = finalSendable.slice(0, RESUME_MAX_PER_REQUEST);
-  const remaining = finalSendable.length - slice.length;
+
+  // Fetch true count of outstanding recipients in the DB for accurate remaining count
+  const { count: dbTotalRemaining } = await db
+    .from('broadcast_recipients')
+    .select('id', { count: 'exact', head: true })
+    .eq('broadcast_id', broadcastId)
+    .in('status', statuses);
+
+  const totalOutstanding = Math.max(dbTotalRemaining ?? 0, finalSendable.length);
+  const remaining = Math.max(0, totalOutstanding - slice.length);
 
   if (slice.length === 0) {
     if (deduplicatedCount > 0) {

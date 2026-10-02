@@ -71,3 +71,23 @@ UPDATE broadcast_recipients
 SET status = 'paused'
 WHERE status = 'failed'
   AND (error_message ILIKE '%pause%' OR error_message LIKE '%132015%');
+
+-- 7. For any broadcast in 'paused' status, mark remaining 'pending' recipients as 'paused'
+UPDATE broadcast_recipients r
+SET status = 'paused', error_message = COALESCE(r.error_message, 'Campaign paused')
+FROM broadcasts b
+WHERE r.broadcast_id = b.id
+  AND b.status = 'paused'
+  AND r.status = 'pending';
+
+-- 8. Backfill paused_count and recompute counts across all broadcasts
+UPDATE broadcasts b
+SET paused_count = COALESCE(agg.cnt, 0)
+FROM (
+  SELECT broadcast_id, COUNT(*) AS cnt
+  FROM broadcast_recipients
+  WHERE status = 'paused'
+  GROUP BY broadcast_id
+) agg
+WHERE b.id = agg.broadcast_id;
+

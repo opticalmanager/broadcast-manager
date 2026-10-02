@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
@@ -31,12 +31,20 @@ import {
   Filter,
   Download,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Trash2,
   PlayCircle,
   RotateCcw,
   Pause,
   PauseCircle,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  ExternalLink,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import {
   getBroadcastStatus,
@@ -157,17 +165,45 @@ export default function BroadcastDetailPage() {
 
   const [broadcast, setBroadcast] = useState<Broadcast | null>(null);
   const [recipients, setRecipients] = useState<BroadcastRecipient[]>([]);
+  const [counts, setCounts] = useState<{
+    pending: number;
+    paused: number;
+    failed: number;
+  }>({ pending: 0, paused: 0, failed: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<RecipientStatus | 'all'>(
-    'all',
-  );
+  const [statusFilter, setStatusFilter] = useState<RecipientStatus | 'all'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [sortField, setSortField] = useState<'created_at' | 'status' | 'sent_at' | 'delivered_at' | 'read_at' | 'error_message'>('created_at');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const [totalFilteredRecipients, setTotalFilteredRecipients] = useState(0);
+  const [childRetries, setChildRetries] = useState<{
+    id: string;
+    name: string;
+    status: string;
+    total_recipients: number;
+    sent_count: number;
+    delivered_count: number;
+    created_at: string;
+  }[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [resumingScope, setResumingScope] = useState<
     'pending' | 'failed' | 'paused' | null
   >(null);
   const [pausing, setPausing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -182,20 +218,119 @@ export default function BroadcastDetailPage() {
       if (bcError) throw bcError;
       setBroadcast(bc);
 
-      const { data: recs, error: recsError } = await supabase
+      // Fetch linked child retries
+      const { data: retries } = await supabase
+        .from('broadcasts')
+        .select('id, name, status, total_recipients, sent_count, delivered_count, created_at')
+        .contains('audience_filter', { retry_of_broadcast_id: broadcastId });
+      setChildRetries(retries ?? []);
+
+      // 1. Fetch exact aggregate counts from the database via head: true (zero row payload, exact)
+      const [
+        { count: pausedExact },
+        { count: pendingExact },
+        { count: failedExact },
+      ] = await Promise.all([
+        supabase
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'paused'),
+        supabase
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'pending'),
+        supabase
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'failed'),
+      ]);
+
+      // If the broadcast is paused, any remaining pending recipients are part of the paused campaign!
+      if (bc.status === 'paused' && (pendingExact ?? 0) > 0) {
+        supabase
+          .from('broadcast_recipients')
+          .update({
+            status: 'paused',
+            error_message: 'Campaign paused',
+          })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'pending')
+          .then(() => {});
+      }
+
+      // Compute true counts:
+      // When a campaign is in 'paused' status, all unsent recipients (total - sent - failed) are paused.
+      const rawPaused = (pausedExact ?? 0) + (bc.status === 'paused' ? (pendingExact ?? 0) : 0);
+      const computedUnsentPaused =
+        bc.status === 'paused'
+          ? Math.max(0, (bc.total_recipients ?? 0) - (bc.sent_count ?? 0) - (failedExact ?? bc.failed_count ?? 0))
+          : 0;
+      const truePaused = Math.max(
+        bc.paused_count ?? 0,
+        rawPaused,
+        computedUnsentPaused
+      );
+      const truePending = bc.status === 'paused' ? 0 : (pendingExact ?? 0);
+      const trueFailed = failedExact ?? bc.failed_count ?? 0;
+
+      setCounts({
+        paused: truePaused,
+        pending: truePending,
+        failed: trueFailed,
+      });
+
+      // 2. Fetch rows for the table matching statusFilter, search, sort, and pagination
+      let recQuery = supabase
         .from('broadcast_recipients')
-        .select('*, contact:contacts(*)')
-        .eq('broadcast_id', broadcastId)
-        .order('created_at', { ascending: false });
+        .select('*, contact:contacts(*)', { count: 'exact' })
+        .eq('broadcast_id', broadcastId);
+
+      if (statusFilter === 'paused') {
+        recQuery = recQuery.in('status', ['paused', 'pending']);
+      } else if (statusFilter === 'sent') {
+        recQuery = recQuery.in('status', ['sent', 'delivered', 'read', 'replied']);
+      } else if (statusFilter === 'delivered') {
+        recQuery = recQuery.in('status', ['delivered', 'read', 'replied']);
+      } else if (statusFilter === 'read') {
+        recQuery = recQuery.in('status', ['read', 'replied']);
+      } else if (statusFilter !== 'all') {
+        recQuery = recQuery.eq('status', statusFilter);
+      }
+
+      if (debouncedSearch.trim()) {
+        const { data: matchedContacts } = await supabase
+          .from('contacts')
+          .select('id')
+          .or(`phone.ilike.%${debouncedSearch.trim()}%,name.ilike.%${debouncedSearch.trim()}%`)
+          .limit(500);
+        const cids = (matchedContacts ?? []).map((c) => c.id);
+        if (cids.length > 0) {
+          recQuery = recQuery.in('contact_id', cids);
+        } else {
+          recQuery = recQuery.in('contact_id', ['00000000-0000-0000-0000-000000000000']);
+        }
+      }
+
+      const from = (page - 1) * pageSize;
+      const to = from + pageSize - 1;
+      recQuery = recQuery
+        .order(sortField, { ascending: sortOrder === 'asc', nullsFirst: false })
+        .range(from, to);
+
+      const { data: recs, count: filteredCount, error: recsError } = await recQuery;
 
       if (recsError) throw recsError;
       setRecipients(recs ?? []);
+      setTotalFilteredRecipients(filteredCount ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('notFound'));
     } finally {
       setLoading(false);
     }
-  }, [broadcastId, t]);
+  }, [broadcastId, t, statusFilter, debouncedSearch, sortField, sortOrder, page]);
 
   useEffect(() => {
     fetchData();
@@ -208,41 +343,125 @@ export default function BroadcastDetailPage() {
     }
   }, [fetchData, broadcast?.status]);
 
-  const filteredRecipients = useMemo(
-    () =>
-      statusFilter === 'all'
-        ? recipients
-        : statusFilter === 'paused'
-          ? recipients.filter((r) => isPausedRecipient(r))
-          : statusFilter === 'failed'
-            ? recipients.filter((r) => r.status === 'failed' && !isPausedRecipient(r))
-            : recipients.filter((r) => r.status === statusFilter),
-    [recipients, statusFilter],
-  );
+  function handleSort(field: typeof sortField) {
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+    setPage(1);
+  }
 
-  function handleExport() {
+  function renderSortIcon(field: typeof sortField) {
+    if (sortField !== field) {
+      return <ArrowUpDown className="ml-1 inline h-3 w-3 text-muted-foreground/40" />;
+    }
+    return sortOrder === 'asc' ? (
+      <ArrowUp className="ml-1 inline h-3 w-3 text-primary" />
+    ) : (
+      <ArrowDown className="ml-1 inline h-3 w-3 text-primary" />
+    );
+  }
+
+  async function handleRetryCampaign(scope: 'paused' | 'failed') {
+    setResumingScope(scope);
+    const toastId = toast.loading(`Creating dedicated ${scope} retry campaign...`);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/retry-campaign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to create retry campaign');
+      }
+
+      toast.dismiss(toastId);
+      toast.success(
+        `Retry campaign created with ${data.recipient_count} recipients! Opening analytics...`
+      );
+      router.push(`/broadcasts/${data.retry_broadcast_id}`);
+    } catch (err) {
+      toast.dismiss(toastId);
+      toast.error(err instanceof Error ? err.message : 'Failed to create retry campaign');
+    } finally {
+      setResumingScope(null);
+    }
+  }
+
+  async function handleExport() {
     if (!broadcast) return;
-    const header = [
-      t('table.contact'),
-      t('table.phone'),
-      t('table.status'),
-      t('table.sent'),
-      t('table.delivered'),
-      t('table.read'),
-      t('table.error'),
-    ];
-    const rows = recipients.map((r) => [
-      r.contact?.name ?? '',
-      r.contact?.phone ?? '',
-      isPausedRecipient(r) ? 'paused' : r.status,
-      r.sent_at ?? '',
-      r.delivered_at ?? '',
-      r.read_at ?? '',
-      r.error_message ?? '',
-    ]);
-    const csv = toCsv([header, ...rows]);
-    const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
-    downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
+    setExporting(true);
+    const toastId = toast.loading('Preparing CSV export...');
+    try {
+      const supabase = createClient();
+      const allRows: BroadcastRecipient[] = [];
+      const PAGE_SIZE = 1000;
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        let query = supabase
+          .from('broadcast_recipients')
+          .select('*, contact:contacts(*)')
+          .eq('broadcast_id', broadcastId);
+
+        if (statusFilter === 'paused') {
+          query = query.in('status', ['paused', 'pending']);
+        } else if (statusFilter !== 'all') {
+          query = query.eq('status', statusFilter);
+        }
+
+        const { data, error } = await query
+          .range(from, from + PAGE_SIZE - 1)
+          .order('created_at', { ascending: true });
+
+        if (error || !data || data.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        allRows.push(...data);
+        if (data.length < PAGE_SIZE) {
+          hasMore = false;
+        } else {
+          from += PAGE_SIZE;
+        }
+      }
+
+      const header = [
+        t('table.contact'),
+        t('table.phone'),
+        t('table.status'),
+        t('table.sent'),
+        t('table.delivered'),
+        t('table.read'),
+        t('table.error'),
+      ];
+      const rows = allRows.map((r) => [
+        r.contact?.name ?? '',
+        r.contact?.phone ?? '',
+        isPausedRecipient(r) || (broadcast.status === 'paused' && r.status === 'pending')
+          ? 'paused'
+          : r.status,
+        r.sent_at ?? '',
+        r.delivered_at ?? '',
+        r.read_at ?? '',
+        r.error_message ?? '',
+      ]);
+      const csv = toCsv([header, ...rows]);
+      const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
+      downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
+      toast.dismiss(toastId);
+      toast.success(`Exported ${allRows.length} recipients`);
+    } catch {
+      toast.dismiss(toastId);
+      toast.error('Failed to export recipients');
+    } finally {
+      setExporting(false);
+    }
   }
 
   /**
@@ -364,11 +583,14 @@ export default function BroadcastDetailPage() {
 
   const status = getBroadcastStatus(broadcast.status);
 
-  const pendingCount = recipients.filter((r) => r.status === 'pending').length;
-  const pausedCount = recipients.filter((r) => isPausedRecipient(r)).length;
-  const failedCount = recipients.filter(
-    (r) => r.status === 'failed' && !isPausedRecipient(r)
-  ).length;
+  const pendingCount = counts.pending;
+  const pausedCount = counts.paused;
+  const failedCount = counts.failed;
+
+  const totalPages = Math.max(1, Math.ceil(totalFilteredRecipients / pageSize));
+  const fromRow = totalFilteredRecipients > 0 ? (page - 1) * pageSize + 1 : 0;
+  const toRow = Math.min(page * pageSize, totalFilteredRecipients);
+  const retryOfBroadcastId = (broadcast.audience_filter as { retry_of_broadcast_id?: string } | null)?.retry_of_broadcast_id;
 
   // A campaign whose tab went away sits in 'sending' with recipients
   // still pending and nothing left to move them. Name that state rather
@@ -404,13 +626,26 @@ export default function BroadcastDetailPage() {
                 {tStatus(status.label)}
               </span>
             </div>
-            <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
               <span>{t('template', { name: broadcast.template_name })}</span>
               <span>-</span>
               <span>
                 {t('createdAt', { date: new Date(broadcast.created_at).toLocaleDateString() })}
               </span>
             </div>
+            {retryOfBroadcastId && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Dedicated retry broadcast for</span>
+                <button
+                  type="button"
+                  className="font-medium underline hover:text-primary/80"
+                  onClick={() => router.push(`/broadcasts/${retryOfBroadcastId}`)}
+                >
+                  original campaign
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -511,9 +746,10 @@ export default function BroadcastDetailPage() {
             {pausedCount > 0 && (
               <Button
                 size="sm"
-                onClick={() => handleResume('paused')}
+                onClick={() => handleRetryCampaign('paused')}
                 disabled={resumingScope !== null}
                 className="bg-amber-600 text-white hover:bg-amber-700"
+                title="Creates a dedicated retry broadcast with full live analytics for paused contacts"
               >
                 {resumingScope === 'paused' ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -527,9 +763,10 @@ export default function BroadcastDetailPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => handleResume('failed')}
+                onClick={() => handleRetryCampaign('failed')}
                 disabled={resumingScope !== null}
                 className="border-border text-muted-foreground hover:bg-muted"
+                title="Creates a dedicated retry broadcast with full live analytics for failed contacts"
               >
                 {resumingScope === 'failed' ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -539,6 +776,45 @@ export default function BroadcastDetailPage() {
                 {t('retryFailed', { count: failedCount })}
               </Button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Linked dedicated retry campaigns */}
+      {childRetries.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <RotateCcw className="h-4 w-4 text-primary" />
+              Dedicated Retry Campaigns ({childRetries.length})
+            </h3>
+            <span className="text-xs text-muted-foreground">
+              Independent campaigns created to retry paused or failed contacts
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {childRetries.map((r) => (
+              <div
+                key={r.id}
+                onClick={() => router.push(`/broadcasts/${r.id}`)}
+                className="flex cursor-pointer items-center justify-between rounded-lg border border-border/80 bg-background/50 p-3 transition hover:border-primary/50 hover:bg-muted/30"
+              >
+                <div className="space-y-1 truncate pr-2">
+                  <p className="text-xs font-semibold text-foreground truncate">{r.name}</p>
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <span>{r.total_recipients.toLocaleString()} contacts</span>
+                    <span>•</span>
+                    <span>{r.sent_count.toLocaleString()} sent</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground capitalize">
+                    {r.status}
+                  </span>
+                  <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -602,71 +878,98 @@ export default function BroadcastDetailPage() {
 
       {/* Recipients Table */}
       <div className="rounded-xl border border-border bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-          <h2 className="text-sm font-medium text-foreground">
-            {statusFilter !== 'all'
-              ? t('recipientsHeader', { filtered: filteredRecipients.length, total: recipients.length })
-              : t('recipientsHeaderAll', { total: recipients.length })}
-          </h2>
-          <div className="flex items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="border-border text-muted-foreground hover:bg-muted"
-                  />
-                }
-              >
-                <Filter className="h-3.5 w-3.5" />
-                {statusFilter === 'all'
-                  ? t('allStatuses')
-                  : tStatus(getRecipientStatus(statusFilter).label)}
-                <ChevronDown className="h-3 w-3" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent className="border-border bg-popover">
-                <DropdownMenuItem
-                  onClick={() => setStatusFilter('all')}
-                  className={
-                    statusFilter === 'all' ? 'text-primary' : 'text-popover-foreground'
+        <div className="flex flex-col gap-3 border-b border-border p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-sm font-medium text-foreground">
+              {statusFilter !== 'all' || debouncedSearch.trim()
+                ? t('recipientsHeader', {
+                    filtered: totalFilteredRecipients,
+                    total: broadcast.total_recipients,
+                  })
+                : t('recipientsHeaderAll', { total: broadcast.total_recipients })}
+            </h2>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-border text-muted-foreground hover:bg-muted"
+                    />
                   }
                 >
-                  {t('allStatuses')}
-                </DropdownMenuItem>
-                {RECIPIENT_STATUSES.map((s) => (
+                  <Filter className="h-3.5 w-3.5" />
+                  {statusFilter === 'all'
+                    ? t('allStatuses')
+                    : tStatus(getRecipientStatus(statusFilter).label)}
+                  <ChevronDown className="h-3 w-3" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="border-border bg-popover">
                   <DropdownMenuItem
-                    key={s}
-                    onClick={() => setStatusFilter(s)}
+                    onClick={() => {
+                      setStatusFilter('all');
+                      setPage(1);
+                    }}
                     className={
-                      statusFilter === s
-                        ? 'text-primary'
-                        : 'text-popover-foreground'
+                      statusFilter === 'all' ? 'text-primary' : 'text-popover-foreground'
                     }
                   >
-                    {tStatus(getRecipientStatus(s).label)}
+                    {t('allStatuses')}
                   </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  {RECIPIENT_STATUSES.map((s) => (
+                    <DropdownMenuItem
+                      key={s}
+                      onClick={() => {
+                        setStatusFilter(s);
+                        setPage(1);
+                      }}
+                      className={
+                        statusFilter === s
+                          ? 'text-primary'
+                          : 'text-popover-foreground'
+                      }
+                    >
+                      {tStatus(getRecipientStatus(s).label)}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExport}
-              disabled={recipients.length === 0}
-              className="border-border text-muted-foreground hover:bg-muted"
-            >
-              <Download className="h-3.5 w-3.5" />
-              {t('exportCsv')}
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExport}
+                disabled={exporting || broadcast.total_recipients === 0}
+                className="border-border text-muted-foreground hover:bg-muted"
+              >
+                {exporting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                {t('exportCsv')}
+              </Button>
+            </div>
+          </div>
+
+          {/* Search bar */}
+          <div className="relative max-w-sm">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search contact name or phone..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 pl-8 pr-3 text-sm bg-muted/40 border-border placeholder:text-muted-foreground"
+            />
           </div>
         </div>
 
-        {filteredRecipients.length === 0 ? (
+        {totalFilteredRecipients === 0 ? (
           <div className="flex h-32 items-center justify-center">
             <p className="text-sm text-muted-foreground">
-              {recipients.length === 0
+              {broadcast.total_recipients === 0
                 ? t('noRecipients')
                 : t('noRecipientsFilter')}
             </p>
@@ -676,17 +979,47 @@ export default function BroadcastDetailPage() {
             <Table>
               <TableHeader>
                 <TableRow className="border-border hover:bg-transparent">
-                  <TableHead className="text-muted-foreground">{t('table.contact')}</TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('created_at')}
+                  >
+                    {t('table.contact')} {renderSortIcon('created_at')}
+                  </TableHead>
                   <TableHead className="text-muted-foreground">{t('table.phone')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.sent')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.delivered')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.read')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.error')}</TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('status')}
+                  >
+                    {t('table.status')} {renderSortIcon('status')}
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('sent_at')}
+                  >
+                    {t('table.sent')} {renderSortIcon('sent_at')}
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('delivered_at')}
+                  >
+                    {t('table.delivered')} {renderSortIcon('delivered_at')}
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('read_at')}
+                  >
+                    {t('table.read')} {renderSortIcon('read_at')}
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                    onClick={() => handleSort('error_message')}
+                  >
+                    {t('table.error')} {renderSortIcon('error_message')}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredRecipients.map((recipient) => {
+                {recipients.map((recipient) => {
                   const isPaused = isPausedRecipient(recipient);
                   const displayStatus = isPaused ? 'paused' : recipient.status;
                   const rStatus = getRecipientStatus(displayStatus);
@@ -728,6 +1061,40 @@ export default function BroadcastDetailPage() {
                 })}
               </TableBody>
             </Table>
+          </div>
+        )}
+
+        {/* Pagination footer */}
+        {totalFilteredRecipients > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+            <div>
+              Showing {fromRow} to {toRow} of {totalFilteredRecipients.toLocaleString()} recipients
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="h-8 px-2.5 border-border text-foreground hover:bg-muted disabled:opacity-40"
+              >
+                <ChevronLeft className="h-4 w-4 mr-1" />
+                Previous
+              </Button>
+              <span className="px-2">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="h-8 px-2.5 border-border text-foreground hover:bg-muted disabled:opacity-40"
+              >
+                Next
+                <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            </div>
           </div>
         )}
       </div>

@@ -79,7 +79,21 @@ export async function POST(
         .eq('status', 'pending');
     }
 
-    // 3. Release delivery lock
+    // 3. Update paused_count on broadcasts
+    const { count: exactPaused } = await admin
+      .from('broadcast_recipients')
+      .select('id', { count: 'exact', head: true })
+      .eq('broadcast_id', id)
+      .eq('status', 'paused');
+
+    if (exactPaused !== null) {
+      await admin
+        .from('broadcasts')
+        .update({ paused_count: exactPaused })
+        .eq('id', id);
+    }
+
+    // 4. Release delivery lock
     await releaseBroadcastDelivery(admin, id);
 
     return NextResponse.json({

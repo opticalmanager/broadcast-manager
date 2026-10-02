@@ -340,8 +340,8 @@ export async function deliverBroadcast(
         }
 
         // When Meta reports the template is paused, every other recipient
-        // in this pass with the same template will fail. Mark remaining planned
-        // recipients as paused and stop to avoid hitting rate limits or logging bogus failures.
+        // in this campaign will fail. Mark remaining planned recipients as paused,
+        // and also mark ALL remaining pending recipients in the broadcast as paused.
         const remainingPlanned = plan.planned.slice(idx + 1);
         if (remainingPlanned.length > 0) {
           const remainingIds = remainingPlanned.map((r) => r.recipientRowId);
@@ -364,10 +364,41 @@ export async function deliverBroadcast(
           }
         }
 
-        // Flip broadcast to 'paused'
+        // Mark ALL other remaining pending recipients in the entire broadcast as paused
+        const { error: pendingErr } = await db
+          .from('broadcast_recipients')
+          .update({
+            status: 'paused',
+            error_message: lastError || 'Template is paused by Meta',
+          })
+          .eq('broadcast_id', plan.broadcastId)
+          .eq('status', 'pending');
+
+        if (pendingErr) {
+          await db
+            .from('broadcast_recipients')
+            .update({
+              status: 'failed',
+              error_message: `[Paused] ${lastError || 'Template is paused by Meta'}`,
+            })
+            .eq('broadcast_id', plan.broadcastId)
+            .eq('status', 'pending');
+        }
+
+        const { count: exactPaused } = await db
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', plan.broadcastId)
+          .eq('status', 'paused');
+
+        // Flip broadcast to 'paused' and stamp paused_count
         await db
           .from('broadcasts')
-          .update({ status: 'paused', updated_at: new Date().toISOString() })
+          .update({
+            status: 'paused',
+            paused_count: exactPaused ?? 0,
+            updated_at: new Date().toISOString(),
+          })
           .eq('id', plan.broadcastId);
 
         break;
@@ -439,6 +470,7 @@ export async function finalizeBroadcastStatus(
     .from('broadcasts')
     .update({
       status: finalStatus,
+      paused_count: paused,
       updated_at: new Date().toISOString(),
     })
     .eq('id', broadcastId);
