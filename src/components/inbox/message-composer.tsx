@@ -536,7 +536,7 @@ export function MessageComposer({
   // ---- Render --------------------------------------------------------
 
   return (
-    <div className="border-t border-border bg-card p-3">
+    <div className="border-t border-border bg-card p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote
@@ -694,6 +694,23 @@ export function MessageComposer({
                 <Zap className="mr-2 h-4 w-4" />
                 {t("quickReplies")}
               </DropdownMenuItem>
+              {/* On narrow mobile screens, provide template and AI draft in menu to keep textarea wide */}
+              <DropdownMenuItem
+                onClick={onOpenTemplates}
+                disabled={readOnly}
+                className="sm:hidden"
+              >
+                <LayoutTemplate className="mr-2 h-4 w-4" />
+                {t("sendTemplate")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleDraft}
+                disabled={readOnly || drafting}
+                className="sm:hidden"
+              >
+                <Sparkles className="mr-2 h-4 w-4" />
+                {drafting ? "Drafting..." : t("draftWithAI")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -703,7 +720,7 @@ export function MessageComposer({
             canAct={!readOnly}
             gateReason="send messages"
             title={readOnly ? undefined : t("sendTemplate")}
-            className="h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-foreground"
+            className="hidden sm:inline-flex h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-foreground"
             onClick={onOpenTemplates}
           >
             <LayoutTemplate className="h-4 w-4" />
@@ -716,7 +733,7 @@ export function MessageComposer({
             gateReason="send messages"
             disabled={drafting}
             title={readOnly ? undefined : t("draftWithAI")}
-            className="h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-primary"
+            className="hidden sm:inline-flex h-9 w-9 shrink-0 p-0 text-muted-foreground hover:text-primary"
             onClick={handleDraft}
           >
             {drafting ? (
@@ -767,7 +784,7 @@ export function MessageComposer({
           `items-end` buttons below the textarea. Indented to line up
           under the textarea left edge. */}
       {!draft && !recording && (
-        <p className="mt-1 pl-[5.5rem] text-[10px] text-muted-foreground">
+        <p className="mt-1 pl-2 sm:pl-[5.5rem] text-[10px] text-muted-foreground">
           {t("draftHint")}
         </p>
       )}

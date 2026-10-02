@@ -9,6 +9,7 @@ import { Header } from "@/components/layout/header";
 import { AccountAccessAlert } from "@/components/layout/account-access-alert";
 import { PresenceHeartbeat } from "@/components/presence/presence-heartbeat";
 import { BrowserNotificationsListener } from "@/components/notifications/browser-notifications-listener";
+import { SmartNotificationPrompt } from "@/components/notifications/smart-notification-prompt";
 
 // Auth-gated dashboard shell. Extracted from the layout so the layout
 // itself can stay a server component and export metadata (noindex) —
@@ -48,9 +49,10 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
       {/* Reports this tab's online/away presence once we know a user is
           signed in. Headless — renders nothing. */}
       <PresenceHeartbeat />
-      {/* Desktop alerts for new customer messages (opt-in via Settings →
-          Your profile). Headless — renders nothing. */}
+      {/* Desktop & mobile alerts for new customer messages and broadcast completions */}
       <BrowserNotificationsListener />
+      {/* Contextual prompt inviting user to enable notifications if not on */}
+      <SmartNotificationPrompt />
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header onOpenSidebar={() => setSidebarOpen(true)} />

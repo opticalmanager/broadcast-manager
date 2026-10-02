@@ -8,7 +8,10 @@ import type { Message } from "@/types";
 import {
   DEFAULT_NOTIFICATION_LABELS,
   buildNotificationContent,
+  buildBroadcastNotificationContent,
   conversationHref,
+  broadcastHref,
+  dispatchSmartNotification,
   getNotificationPermission,
   pickContactDisplayName,
   readBrowserNotifyPref,
@@ -33,20 +36,14 @@ export function useBrowserNotifyPref(): boolean {
 }
 
 /**
- * Desktop notifications for new inbound customer messages. Mount ONCE
- * per signed-in dashboard tab (the dashboard shell does this via
+ * Smart notifications for new inbound customer messages and broadcast completions.
+ * Mount ONCE per signed-in dashboard tab (the dashboard shell does this via
  * <BrowserNotificationsListener />) so alerts fire on any page.
  *
- * Listens for realtime INSERTs on `messages` — RLS scopes the stream to
- * the caller's account, same as useTotalUnread / useRealtime. Only
- * live events are considered: there is no initial fetch, so an existing
- * backlog never produces a burst of alerts on page load.
- *
- * Own channel name so it coexists with the inbox page's subscription
- * and the sidebar's unread counters.
- *
- * Fires only while a dashboard tab is open — there is no service worker
- * or Web Push here, so a closed browser stays quiet.
+ * Listens for:
+ * 1. realtime INSERTs on `messages` (filtered to customer replies, suppressed
+ *    if user is actively viewing that conversation).
+ * 2. realtime UPDATEs on `broadcasts` (filtered to status transition to 'sent' or 'paused').
  */
 export function useBrowserNotifications(): void {
   const enabled = useBrowserNotifyPref();
@@ -69,9 +66,10 @@ export function useBrowserNotifications(): void {
     };
   });
 
-  // Message ids already handled, for replay dedupe. Survives re-renders,
-  // pruned by shouldNotifyForMessage.
+  // Message ids already handled, for replay dedupe.
   const seenRef = useRef<Map<string, number>>(new Map());
+  // Broadcast ids + status handled, for dedupe.
+  const seenBroadcastsRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     if (!enabled) return;
@@ -80,7 +78,7 @@ export function useBrowserNotifications(): void {
     const supabase = createClient();
     let cancelled = false;
 
-    const notify = async (msg: Message) => {
+    const notifyMessage = async (msg: Message) => {
       // One small select to put the contact's name in the title. A
       // failure here just means the generic fallback title.
       const { data } = await supabase
@@ -99,34 +97,51 @@ export function useBrowserNotifications(): void {
         labelsRef.current,
       );
 
-      try {
-        const notification = new Notification(title, {
-          body,
-          // One alert per conversation: a second message from the same
-          // customer replaces the first instead of stacking.
-          tag: msg.conversation_id,
-          icon: "/icon",
-        });
-        notification.onclick = () => {
+      await dispatchSmartNotification({
+        title,
+        body,
+        tag: msg.conversation_id,
+        url: conversationHref(msg.conversation_id),
+        onClick: () => {
           window.focus();
           router.push(conversationHref(msg.conversation_id));
-          notification.close();
-        };
-      } catch (err) {
-        // Some browsers throw from the constructor (e.g. Android Chrome
-        // requires a service worker). Non-fatal.
-        console.error("[useBrowserNotifications] failed to show:", err);
-      }
+        },
+      });
+    };
+
+    const notifyBroadcast = async (broadcast: {
+      id: string;
+      name: string;
+      status: string;
+      total_recipients?: number;
+      sent_count?: number;
+      failed_count?: number;
+    }) => {
+      const dedupeKey = `${broadcast.id}:${broadcast.status}`;
+      const now = Date.now();
+      const lastSeen = seenBroadcastsRef.current.get(dedupeKey);
+      if (lastSeen && now - lastSeen < 60_000) return;
+      seenBroadcastsRef.current.set(dedupeKey, now);
+
+      const { title, body } = buildBroadcastNotificationContent(broadcast);
+      await dispatchSmartNotification({
+        title,
+        body,
+        tag: `broadcast-${broadcast.id}`,
+        url: broadcastHref(broadcast.id),
+        onClick: () => {
+          window.focus();
+          router.push(broadcastHref(broadcast.id));
+        },
+      });
     };
 
     const channel = supabase
-      .channel("browser-notifications")
+      .channel("smart-browser-notifications")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
-          // Re-check every time: the user can revoke permission in the
-          // browser without the preference flipping.
           if (getNotificationPermission() !== "granted") return;
           const msg = payload.new as Message;
           const shouldNotify = shouldNotifyForMessage(msg, {
@@ -138,7 +153,31 @@ export function useBrowserNotifications(): void {
             seen: seenRef.current,
           });
           if (!shouldNotify) return;
-          void notify(msg);
+          void notifyMessage(msg);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "broadcasts" },
+        (payload) => {
+          if (getNotificationPermission() !== "granted") return;
+          const newB = payload.new as {
+            id: string;
+            name: string;
+            status: string;
+            total_recipients?: number;
+            sent_count?: number;
+            failed_count?: number;
+          };
+          const oldB = payload.old as { status?: string } | undefined;
+
+          // Only alert when entering completed 'sent' or 'paused' status
+          if (
+            (newB.status === "sent" || newB.status === "paused") &&
+            oldB?.status !== newB.status
+          ) {
+            void notifyBroadcast(newB);
+          }
         },
       )
       .subscribe();

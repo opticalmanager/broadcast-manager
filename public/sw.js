@@ -105,3 +105,30 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
 });
+
+// Handle notification clicks: focus open window or open target URL
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const urlToOpen = event.notification.data?.url || '/inbox';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // If a window is already open, focus it and navigate
+      for (const client of clientList) {
+        if ('focus' in client) {
+          if (client.url === urlToOpen || client.url.endsWith(urlToOpen)) {
+            return client.focus();
+          }
+          if ('navigate' in client) {
+            return client.navigate(urlToOpen).then((c) => c?.focus());
+          }
+          return client.focus();
+        }
+      }
+      // If no window is open, open a new one
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(urlToOpen);
+      }
+    })
+  );
+});

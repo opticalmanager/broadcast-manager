@@ -27,6 +27,7 @@ import {
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
+  Info,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -106,6 +107,10 @@ interface MessageThreadProps {
    */
   contactPanelOpen?: boolean;
   onToggleContactPanel?: () => void;
+  /**
+   * On mobile, opens the contact details drawer (tags, deals, notes).
+   */
+  onOpenContactDrawer?: () => void;
 }
 
 function formatDateSeparator(dateStr: string, t: ReturnType<typeof useTranslations>): string {
@@ -164,6 +169,7 @@ export function MessageThread({
   onRefresh,
   contactPanelOpen,
   onToggleContactPanel,
+  onOpenContactDrawer,
 }: MessageThreadProps) {
   const t = useTranslations("Inbox.messageThread");
   const tTimer = useTranslations("Inbox.sessionTimer");
@@ -918,14 +924,24 @@ export function MessageThread({
               <ArrowLeft className="h-5 w-5" />
             </button>
           )}
-          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
-            {displayName.charAt(0).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>
-            <p className="truncate text-xs text-muted-foreground">
-              {contactHandle(contact)}
-            </p>
+          <div
+            onClick={onOpenContactDrawer}
+            role={onOpenContactDrawer ? "button" : undefined}
+            tabIndex={onOpenContactDrawer ? 0 : undefined}
+            className={cn(
+              "flex min-w-0 items-center gap-2 sm:gap-3 text-left",
+              onOpenContactDrawer && "cursor-pointer rounded-lg p-1 -m-1 transition hover:bg-muted/50 active:opacity-80 lg:cursor-default lg:hover:bg-transparent"
+            )}
+          >
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+              {displayName.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>
+              <p className="truncate text-xs text-muted-foreground">
+                {contactHandle(contact)}
+              </p>
+            </div>
           </div>
           {/* Session timer badge — hidden on the narrowest phones so
               the name + back arrow keep their room. */}
@@ -942,6 +958,19 @@ export function MessageThread({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Mobile contact info button — opens the contact details drawer */}
+          {onOpenContactDrawer && (
+            <button
+              type="button"
+              onClick={onOpenContactDrawer}
+              aria-label="Contact Details"
+              title="Contact Details"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:hidden"
+            >
+              <Info className="h-4 w-4" />
+            </button>
+          )}
+
           {/* Contact-panel toggle — desktop only. The contact sidebar
               eats a chunk of horizontal width that crowds the thread on
               smaller laptops; this lets agents reclaim it when they just
@@ -1084,7 +1113,7 @@ export function MessageThread({
       </div>
 
       {/* Messages Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4 sm:py-4">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />

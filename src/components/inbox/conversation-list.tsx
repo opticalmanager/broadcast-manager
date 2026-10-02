@@ -236,32 +236,29 @@ export function ConversationList({
           />
         </div>
 
+        {/* Horizontal swipeable filter pills */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          {FILTER_OPTIONS.map((opt) => {
+            const isSelected = filter === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setFilter(opt.value)}
+                className={cn(
+                  "shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-all active:scale-95",
+                  isSelected
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="flex flex-wrap items-center gap-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
-                {activeFilter?.label ?? t("filterAll")}
-                <ChevronDown className="h-3 w-3" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="border-border bg-popover"
-            >
-              {FILTER_OPTIONS.map((opt) => (
-                <DropdownMenuItem
-                  key={opt.value}
-                  onClick={() => setFilter(opt.value)}
-                  className={cn(
-                    "text-sm",
-                    filter === opt.value
-                      ? "text-primary"
-                      : "text-popover-foreground"
-                  )}
-                >
-                  {opt.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
 
           {tags.length > 0 && (
             <DropdownMenu>
@@ -439,6 +436,7 @@ function ConversationItem({
   const contact = conversation.contact;
   const displayName = contact?.name || contact?.phone || t("unknown");
   const initials = displayName.charAt(0).toUpperCase();
+  const hasUnread = conversation.unread_count > 0;
 
   const handleClick = useCallback(() => {
     onSelect(conversation);
@@ -454,17 +452,18 @@ function ConversationItem({
     <button
       onClick={handleClick}
       className={cn(
-        "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
-        isActive && "border-l-2 border-primary bg-muted/70"
+        "flex w-full min-h-[66px] items-center gap-3 px-3.5 py-3 text-left transition-colors active:bg-muted/80 hover:bg-muted/50",
+        isActive && "border-l-3 border-primary bg-muted/70",
+        hasUnread && !isActive && "bg-primary/5"
       )}
     >
       {/* Avatar */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+      <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold text-foreground shadow-xs">
         {contact?.avatar_url ? (
           <img
             src={contact.avatar_url}
             alt={displayName}
-            className="h-10 w-10 rounded-full object-cover"
+            className="h-11 w-11 rounded-full object-cover"
           />
         ) : (
           initials
@@ -474,18 +473,39 @@ function ConversationItem({
       {/* Content */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
+          <span
+            className={cn(
+              "truncate text-sm text-foreground",
+              hasUnread ? "font-bold" : "font-medium"
+            )}
+          >
             {displayName}
           </span>
-          <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
+          <span
+            className={cn(
+              "shrink-0 text-[11px]",
+              hasUnread
+                ? "font-semibold text-emerald-600 dark:text-emerald-400"
+                : "text-muted-foreground"
+            )}
+          >
+            {timeAgo}
+          </span>
         </div>
-        <div className="mt-0.5 flex items-center justify-between gap-2">
-          <p className="truncate text-xs text-muted-foreground">
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p
+            className={cn(
+              "truncate text-xs",
+              hasUnread
+                ? "font-medium text-foreground/90"
+                : "text-muted-foreground"
+            )}
+          >
             {conversation.last_message_text || t("noMessagesYet")}
           </p>
           <div className="flex shrink-0 items-center gap-1.5">
-            {conversation.unread_count > 0 && (
-              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+            {hasUnread && (
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-500 px-1.5 text-[11px] font-bold text-white shadow-xs">
                 {conversation.unread_count}
               </span>
             )}
@@ -502,3 +522,4 @@ function ConversationItem({
     </button>
   );
 }
+

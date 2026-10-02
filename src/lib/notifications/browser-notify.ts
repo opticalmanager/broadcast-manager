@@ -190,6 +190,104 @@ export function conversationHref(conversationId: string): string {
   return `/inbox?c=${encodeURIComponent(conversationId)}`;
 }
 
+/** Deep link to broadcast campaign report. */
+export function broadcastHref(broadcastId: string): string {
+  return `/broadcasts/${encodeURIComponent(broadcastId)}`;
+}
+
+/**
+ * Format notification content when a broadcast campaign completes or pauses.
+ */
+export function buildBroadcastNotificationContent(broadcast: {
+  name: string;
+  status: string;
+  total_recipients?: number;
+  sent_count?: number;
+  failed_count?: number;
+}): { title: string; body: string } {
+  if (broadcast.status === "paused") {
+    return {
+      title: `⏸️ Broadcast Paused: ${broadcast.name}`,
+      body: `Campaign paused at ${broadcast.sent_count || 0}/${broadcast.total_recipients || 0} messages sent. Tap to review.`,
+    };
+  }
+  const total = broadcast.total_recipients || broadcast.sent_count || 0;
+  const sent = broadcast.sent_count || total;
+  const failed = broadcast.failed_count || 0;
+  const failedPart = failed > 0 ? ` (${failed} undelivered)` : "";
+  return {
+    title: `📢 Broadcast Complete: ${broadcast.name}`,
+    body: `Successfully sent to ${sent}/${total} recipients${failedPart}. Tap to view analytics.`,
+  };
+}
+
+// ---------------------------------------------------------------------
+// Smart Notification Dispatcher (Service Worker + Desktop fallback)
+// ---------------------------------------------------------------------
+
+export interface DispatchNotificationOptions {
+  title: string;
+  body: string;
+  icon?: string;
+  tag?: string;
+  url?: string;
+  onClick?: () => void;
+}
+
+/**
+ * Dispatches a notification across desktop and mobile.
+ * Uses ServiceWorkerRegistration.showNotification first (required for
+ * Android Chrome and PWA standalone mode) and falls back to new Notification().
+ */
+export async function dispatchSmartNotification(
+  options: DispatchNotificationOptions
+): Promise<void> {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (window.Notification.permission !== "granted") return;
+
+  const iconUrl = options.icon || "/icons/icon-192x192.png";
+
+  // 1. Try Service Worker registration (critical for Android & PWA)
+  if ("serviceWorker" in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (reg && reg.showNotification) {
+        await reg.showNotification(options.title, {
+          body: options.body,
+          tag: options.tag,
+          icon: iconUrl,
+          badge: iconUrl,
+          data: { url: options.url },
+          vibrate: [200, 100, 200],
+        } as NotificationOptions);
+        return;
+      }
+    } catch (swErr) {
+      console.warn("[dispatchSmartNotification] SW showNotification failed, trying fallback:", swErr);
+    }
+  }
+
+  // 2. Standard Web Notification fallback
+  try {
+    const notification = new Notification(options.title, {
+      body: options.body,
+      tag: options.tag,
+      icon: iconUrl,
+    });
+    notification.onclick = () => {
+      window.focus();
+      if (options.onClick) {
+        options.onClick();
+      } else if (options.url) {
+        window.location.href = options.url;
+      }
+      notification.close();
+    };
+  } catch (err) {
+    console.error("[dispatchSmartNotification] Notification constructor failed:", err);
+  }
+}
+
 // ---------------------------------------------------------------------
 // Browser-only helpers (SSR-guarded).
 // ---------------------------------------------------------------------
@@ -229,6 +327,33 @@ export function writeBrowserNotifyPref(enabled: boolean): void {
 }
 
 /**
+ * Contextual Notification Prompt Snooze (7 days default)
+ */
+export const SMART_NOTIFY_PROMPT_SNOOZE_KEY = "wacrm:smart-notify-snoozed-until";
+export const SNOOZE_DURATION_DAYS = 7;
+
+export function isSmartNotificationPromptSnoozed(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const snoozedUntil = window.localStorage.getItem(SMART_NOTIFY_PROMPT_SNOOZE_KEY);
+    if (!snoozedUntil) return false;
+    return Date.now() < Number(snoozedUntil);
+  } catch {
+    return false;
+  }
+}
+
+export function snoozeSmartNotificationPrompt(days = SNOOZE_DURATION_DAYS): void {
+  if (typeof window === "undefined") return;
+  try {
+    const expiry = Date.now() + days * 24 * 60 * 60 * 1000;
+    window.localStorage.setItem(SMART_NOTIFY_PROMPT_SNOOZE_KEY, String(expiry));
+  } catch {
+    // Best-effort
+  }
+}
+
+/**
  * Subscribe to preference changes from this tab (custom event) and other
  * tabs (`storage`). Shaped for `useSyncExternalStore`.
  */
@@ -244,3 +369,4 @@ export function subscribeBrowserNotifyPref(onChange: () => void): () => void {
     window.removeEventListener("storage", onStorage);
   };
 }
+

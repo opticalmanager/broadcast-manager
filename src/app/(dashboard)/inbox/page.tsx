@@ -13,6 +13,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -88,6 +89,14 @@ function InboxPageInner() {
       }
       return next;
     });
+  }, []);
+
+  /**
+   * Mobile (<lg) slide-over drawer for contact tags, deals, and notes.
+   */
+  const [mobileContactDrawerOpen, setMobileContactDrawerOpen] = useState(false);
+  const handleOpenMobileContactDrawer = useCallback(() => {
+    setMobileContactDrawerOpen(true);
   }, []);
 
   // Fire the deep-link auto-select exactly once per URL — subsequent
@@ -562,7 +571,10 @@ function InboxPageInner() {
   const hasActiveConv = !!activeConversation;
 
   return (
-    <div className="-m-4 flex h-[calc(100vh-3.5rem)] flex-col overflow-hidden sm:-m-6">
+    <div className={cn(
+      "-m-4 flex h-[calc(100dvh-3.5rem)] sm:h-[calc(100vh-3.5rem)] flex-col overflow-hidden sm:-m-6",
+      hasActiveConv && "max-h-[100dvh]"
+    )}>
       {/* WhatsApp connection banner — in the flex column, not absolute,
           so it pushes the panels down instead of overlapping them. */}
       {whatsappConnected === false && (
@@ -623,6 +635,7 @@ function InboxPageInner() {
             onRefresh={handleManualRefresh}
             contactPanelOpen={contactPanelOpen}
             onToggleContactPanel={handleToggleContactPanel}
+            onOpenContactDrawer={handleOpenMobileContactDrawer}
           />
         </div>
 
@@ -636,6 +649,19 @@ function InboxPageInner() {
           </div>
         )}
       </div>
+
+      {/* Mobile contact drawer: slide-over sheet from the right for tags, deals, and notes */}
+      <Sheet open={mobileContactDrawerOpen} onOpenChange={setMobileContactDrawerOpen}>
+        <SheetContent
+          side="right"
+          className="w-[88vw] max-w-md p-0 overflow-hidden sm:max-w-md lg:hidden"
+        >
+          <div className="h-full overflow-y-auto">
+            <ContactSidebar contact={activeContact} className="w-full border-l-0" />
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
+
