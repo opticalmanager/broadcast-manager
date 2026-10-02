@@ -9,6 +9,7 @@ import {
 } from '@/lib/broadcast-retry';
 import { normalizeKey } from '@/lib/contacts/dedupe';
 import { filterAlreadySentContacts } from '@/lib/broadcast-dedup';
+import { getBlacklistedContactIds } from '@/lib/contacts/blacklist';
 import { Contact, MessageTemplate } from '@/types';
 
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -239,6 +240,14 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       contacts = await resolveCustomFieldAudience(supabase, audience.customField);
     } else if (audience.type === 'csv' && audience.csvContacts) {
       contacts = await upsertCsvContacts(supabase, audience.csvContacts);
+    }
+
+    // Strict Blacklist Rule: Never send broadcasts to blacklisted contacts
+    if (accountId) {
+      const blacklistedContactIds = await getBlacklistedContactIds(supabase, accountId);
+      if (blacklistedContactIds.size > 0) {
+        contacts = contacts.filter((c) => !blacklistedContactIds.has(c.id));
+      }
     }
 
     // Apply exclude tags (works across all contact-derived audience

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isPausedError } from '@/lib/broadcast-status';
+import { getBlacklistedContactIds, getBlacklistedPhones } from '@/lib/contacts/blacklist';
 
 export type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -110,7 +111,15 @@ export async function calculateAudienceReach(
 
   // 2. Handle CSV audience type
   if (audience.type === 'csv' && audience.csvContacts) {
+    const blacklistedPhones = accountId
+      ? await getBlacklistedPhones(supabase, accountId)
+      : new Set<string>();
+
+    const nonBlacklistedCsv = audience.csvContacts.filter(
+      (c) => !blacklistedPhones.has(c.phone.replace(/\D/g, ''))
+    );
     const rawTotal = audience.csvContacts.length;
+
     if (audience.excludeAlreadySentThisTemplate && dedupExcludeSet.size > 0) {
       const excludedContactIds = Array.from(dedupExcludeSet);
       const excludedPhones = new Set<string>();
@@ -127,7 +136,7 @@ export async function calculateAudienceReach(
         }
       }
 
-      const remaining = audience.csvContacts.filter(
+      const remaining = nonBlacklistedCsv.filter(
         (c) => !excludedPhones.has(c.phone.replace(/\D/g, ''))
       );
       const deduped = rawTotal - remaining.length;
@@ -137,15 +146,25 @@ export async function calculateAudienceReach(
         rawBaseCount: rawTotal,
       };
     }
+    const deduped = rawTotal - nonBlacklistedCsv.length;
     return {
-      estimatedCount: rawTotal,
-      dedupCount: 0,
+      estimatedCount: nonBlacklistedCsv.length,
+      dedupCount: deduped,
       rawBaseCount: rawTotal,
     };
   }
 
-  // 3. Collect tag exclusion IDs
+  // 3. Collect tag exclusion IDs and strictly exclude blacklisted contacts
   const excludeTagSet = new Set<string>();
+
+  // Strict Blacklist Rule: contacts tagged 'blacklisted' are never included in broadcasts
+  if (accountId) {
+    const blacklistedIds = await getBlacklistedContactIds(supabase, accountId);
+    for (const id of blacklistedIds) {
+      excludeTagSet.add(id);
+    }
+  }
+
   if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
     let from = 0;
     const PAGE = 1000;

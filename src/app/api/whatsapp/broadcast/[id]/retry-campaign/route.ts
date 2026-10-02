@@ -19,6 +19,7 @@ import { deliverBroadcast } from '@/lib/whatsapp/broadcast-core';
 import { planBroadcastResume } from '@/lib/whatsapp/broadcast-resume';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { isPausedRecipient } from '@/lib/broadcast-status';
+import { getBlacklistedContactIds } from '@/lib/contacts/blacklist';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -175,8 +176,12 @@ export async function POST(
       }
     }
 
+    const blacklistedContactIds = await getBlacklistedContactIds(admin, accountId);
+
     const sendableCandidates = candidates.filter(
-      (c) => !c.contact_id || !alreadyDeliveredSet.has(c.contact_id)
+      (c) =>
+        (!c.contact_id || !alreadyDeliveredSet.has(c.contact_id)) &&
+        (!c.contact_id || !blacklistedContactIds.has(c.contact_id))
     );
     const deduplicatedCount = candidates.length - sendableCandidates.length;
 
@@ -184,7 +189,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            'All paused contacts have already received this template in other campaigns. No duplicates were sent.',
+            'All candidate contacts were excluded (already received template or are blacklisted).',
           deduplicated_count: deduplicatedCount,
         },
         { status: 400 }
@@ -223,7 +228,6 @@ export async function POST(
         read_count: 0,
         replied_count: 0,
         failed_count: 0,
-        paused_count: 0,
       })
       .select()
       .single();

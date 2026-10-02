@@ -43,6 +43,8 @@ import {
   ArrowUp,
   ArrowDown,
   ExternalLink,
+  SlidersHorizontal,
+  ShieldAlert,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -196,6 +198,7 @@ export default function BroadcastDetailPage() {
   >(null);
   const [pausing, setPausing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [blacklisting, setBlacklisting] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -227,9 +230,10 @@ export default function BroadcastDetailPage() {
 
       // 1. Fetch exact aggregate counts from the database via head: true (zero row payload, exact)
       const [
-        { count: pausedExact },
-        { count: pendingExact },
-        { count: failedExact },
+        { count: pausedStatusCount },
+        { count: pendingCountExact },
+        { count: totalFailedCount },
+        { count: pauseErrorCount },
       ] = await Promise.all([
         supabase
           .from('broadcast_recipients')
@@ -246,35 +250,21 @@ export default function BroadcastDetailPage() {
           .select('id', { count: 'exact', head: true })
           .eq('broadcast_id', broadcastId)
           .eq('status', 'failed'),
-      ]);
-
-      // If the broadcast is paused, any remaining pending recipients are part of the paused campaign!
-      if (bc.status === 'paused' && (pendingExact ?? 0) > 0) {
         supabase
           .from('broadcast_recipients')
-          .update({
-            status: 'paused',
-            error_message: 'Campaign paused',
-          })
+          .select('id', { count: 'exact', head: true })
           .eq('broadcast_id', broadcastId)
-          .eq('status', 'pending')
-          .then(() => {});
-      }
+          .eq('status', 'failed')
+          .or('error_message.ilike.%pause%,error_message.ilike.%132015%'),
+      ]);
 
-      // Compute true counts:
-      // When a campaign is in 'paused' status, all unsent recipients (total - sent - failed) are paused.
-      const rawPaused = (pausedExact ?? 0) + (bc.status === 'paused' ? (pendingExact ?? 0) : 0);
-      const computedUnsentPaused =
-        bc.status === 'paused'
-          ? Math.max(0, (bc.total_recipients ?? 0) - (bc.sent_count ?? 0) - (failedExact ?? bc.failed_count ?? 0))
-          : 0;
-      const truePaused = Math.max(
-        bc.paused_count ?? 0,
-        rawPaused,
-        computedUnsentPaused
-      );
-      const truePending = bc.status === 'paused' ? 0 : (pendingExact ?? 0);
-      const trueFailed = failedExact ?? bc.failed_count ?? 0;
+      const truePaused =
+        (pausedStatusCount ?? 0) +
+        (pauseErrorCount ?? 0) +
+        (bc.status === 'paused' ? (pendingCountExact ?? 0) : 0);
+
+      const trueFailed = Math.max(0, (totalFailedCount ?? 0) - (pauseErrorCount ?? 0));
+      const truePending = bc.status === 'paused' ? 0 : (pendingCountExact ?? 0);
 
       setCounts({
         paused: truePaused,
@@ -289,7 +279,12 @@ export default function BroadcastDetailPage() {
         .eq('broadcast_id', broadcastId);
 
       if (statusFilter === 'paused') {
-        recQuery = recQuery.in('status', ['paused', 'pending']);
+        recQuery = recQuery.or('status.eq.paused,and(status.eq.failed,or(error_message.ilike.%pause%,error_message.ilike.%132015%))');
+      } else if (statusFilter === 'failed') {
+        recQuery = recQuery
+          .eq('status', 'failed')
+          .not('error_message', 'ilike', '%pause%')
+          .not('error_message', 'ilike', '%132015%');
       } else if (statusFilter === 'sent') {
         recQuery = recQuery.in('status', ['sent', 'delivered', 'read', 'replied']);
       } else if (statusFilter === 'delivered') {
@@ -391,6 +386,34 @@ export default function BroadcastDetailPage() {
     }
   }
 
+  async function handleBlacklistFailed() {
+    if (counts.failed === 0) {
+      toast.info('No failed contacts to blacklist.');
+      return;
+    }
+    setBlacklisting(true);
+    const toastId = toast.loading('Tagging failed contacts as blacklisted...');
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/blacklist-failed`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to blacklist contacts');
+      }
+      toast.dismiss(toastId);
+      toast.success(
+        data.message || `Successfully blacklisted ${data.count} failed contacts!`
+      );
+      await fetchData();
+    } catch (err) {
+      toast.dismiss(toastId);
+      toast.error(err instanceof Error ? err.message : 'Failed to blacklist contacts');
+    } finally {
+      setBlacklisting(false);
+    }
+  }
+
   async function handleExport() {
     if (!broadcast) return;
     setExporting(true);
@@ -409,7 +432,18 @@ export default function BroadcastDetailPage() {
           .eq('broadcast_id', broadcastId);
 
         if (statusFilter === 'paused') {
-          query = query.in('status', ['paused', 'pending']);
+          query = query.or('status.eq.paused,and(status.eq.failed,or(error_message.ilike.%pause%,error_message.ilike.%132015%))');
+        } else if (statusFilter === 'failed') {
+          query = query
+            .eq('status', 'failed')
+            .not('error_message', 'ilike', '%pause%')
+            .not('error_message', 'ilike', '%132015%');
+        } else if (statusFilter === 'sent') {
+          query = query.in('status', ['sent', 'delivered', 'read', 'replied']);
+        } else if (statusFilter === 'delivered') {
+          query = query.in('status', ['delivered', 'read', 'replied']);
+        } else if (statusFilter === 'read') {
+          query = query.in('status', ['read', 'replied']);
         } else if (statusFilter !== 'all') {
           query = query.eq('status', statusFilter);
         }
@@ -649,7 +683,94 @@ export default function BroadcastDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Top Retry Dropdown Button */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={resumingScope !== null || (pausedCount === 0 && failedCount === 0)}
+                  className="border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+                />
+              }
+            >
+              {resumingScope !== null ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Retry
+              <ChevronDown className="h-3 w-3 ml-1" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="border-border bg-popover min-w-[220px]">
+              <DropdownMenuItem
+                disabled={pausedCount === 0}
+                onClick={() => handleRetryCampaign('paused')}
+                className="cursor-pointer gap-2 py-2"
+              >
+                <PauseCircle className="h-4 w-4 text-amber-500 shrink-0" />
+                <div className="flex flex-col">
+                  <span className="font-medium text-xs">Retry Paused ({pausedCount.toLocaleString()})</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    Launch dedicated retry campaign for paused contacts
+                  </span>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={failedCount === 0}
+                onClick={() => handleRetryCampaign('failed')}
+                className="cursor-pointer gap-2 py-2"
+              >
+                <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
+                <div className="flex flex-col">
+                  <span className="font-medium text-xs">Retry Failed ({failedCount.toLocaleString()})</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    Launch dedicated retry campaign for failed contacts
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Top Actions Dropdown Button */}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={blacklisting}
+                  className="border-border bg-card text-foreground hover:bg-muted"
+                />
+              }
+            >
+              {blacklisting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+              ) : (
+                <SlidersHorizontal className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Action
+              <ChevronDown className="h-3 w-3 ml-1" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="border-border bg-popover min-w-[240px]">
+              <DropdownMenuItem
+                disabled={failedCount === 0}
+                onClick={handleBlacklistFailed}
+                className="cursor-pointer gap-2 py-2 text-red-400 focus:text-red-400 focus:bg-red-500/10"
+              >
+                <ShieldAlert className="h-4 w-4 text-red-500 shrink-0" />
+                <div className="flex flex-col">
+                  <span className="font-medium text-xs">Blacklist Failed ({failedCount.toLocaleString()})</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    Tag failed contacts as &quot;blacklisted&quot; and exclude from all campaigns
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {broadcast.status === 'sending' && (
             <Button
               variant="outline"
@@ -723,9 +844,11 @@ export default function BroadcastDetailPage() {
             <p className="mt-0.5 text-muted-foreground">
               {isStalled
                 ? t('resumeStalledHint', { count: pendingCount })
-                : pausedCount > 0
-                  ? t('resumePausedHint', { count: pausedCount })
-                  : t('resumeHint', { count: failedCount })}
+                : pausedCount > 0 && failedCount > 0
+                  ? `${pausedCount.toLocaleString()} recipients paused, ${failedCount.toLocaleString()} failed.`
+                  : pausedCount > 0
+                    ? t('resumePausedHint', { count: pausedCount })
+                    : t('resumeHint', { count: failedCount })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

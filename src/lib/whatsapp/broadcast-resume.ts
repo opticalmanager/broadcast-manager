@@ -27,6 +27,7 @@ import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 import { isPausedRecipient } from '@/lib/broadcast-status';
+import { getBlacklistedContactIds } from '@/lib/contacts/blacklist';
 
 /** Which recipients a resume pass picks up. */
 export type ResumeScope = 'pending' | 'failed' | 'paused' | 'all';
@@ -238,9 +239,16 @@ export async function planBroadcastResume(
       .in('id', unsendable);
   }
 
+  // Strict Blacklist Rule: Exclude contacts tagged as 'blacklisted'
+  const blacklistedContactIds = await getBlacklistedContactIds(db, accountId);
+  const eligibleSendable = sendable.filter((r) => {
+    const cid = contactId(r);
+    return !cid || !blacklistedContactIds.has(cid);
+  });
+
   // Smart deduplication check for paused retries:
   // Make sure those paused contacts didn't already receive a campaign with the same template!
-  let deduplicatedSendable = sendable;
+  let deduplicatedSendable = eligibleSendable;
   let deduplicatedCount = 0;
 
   if (scope === 'paused' || scope === 'all') {
