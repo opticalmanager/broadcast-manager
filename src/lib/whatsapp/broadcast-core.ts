@@ -263,8 +263,12 @@ export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
-  for (let idx = 0; idx < plan.planned.length; idx++) {
-    const recipient = plan.planned[idx];
+  const CONCURRENCY = 10;
+  let templatePaused = false;
+  let pauseErrorText: string | null = null;
+
+  for (let idx = 0; idx < plan.planned.length; idx += CONCURRENCY) {
+    if (templatePaused) break;
 
     // Check if the broadcast itself has been paused by the user mid-send
     const { data: bcastCheck } = await db
@@ -278,143 +282,130 @@ export async function deliverBroadcast(
       break;
     }
 
-    const variants = phoneVariants(recipient.phone);
-    let sentMessageId: string | null = null;
-    let lastError: string | null = null;
+    const chunk = plan.planned.slice(idx, idx + CONCURRENCY);
 
-    for (const variant of variants) {
-      try {
-        const result = await sendTemplateMessage({
-          phoneNumberId: plan.phoneNumberId,
-          accessToken: plan.accessToken,
-          to: variant,
-          templateName: plan.templateName,
-          language: plan.templateLanguage,
-          template: plan.templateRow ?? undefined,
-          params: recipient.params,
-        });
-        sentMessageId = result.messageId;
-        lastError = null;
-        break;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        lastError = message;
-        // Only a "recipient not allowed" error is worth another variant.
-        if (!isRecipientNotAllowedError(message)) break;
-      }
-    }
+    await Promise.all(
+      chunk.map(async (recipient) => {
+        if (templatePaused) return;
 
-    if (sentMessageId) {
-      await db
-        .from('broadcast_recipients')
-        .update({
-          status: 'sent',
-          sent_at: new Date().toISOString(),
-          whatsapp_message_id: sentMessageId,
-          error_message: null,
-        })
-        .eq('id', recipient.recipientRowId);
-    } else {
-      const isPaused = isPausedError(lastError);
+        const variants = phoneVariants(recipient.phone);
+        let sentMessageId: string | null = null;
+        let lastError: string | null = null;
 
-      if (isPaused) {
-        // Do NOT mark numbers which failed due to paused as failed!
-        // Mark as 'paused'.
-        const { error: pausedUpdateErr } = await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'paused',
-            error_message: lastError || 'Template is paused',
-          })
-          .eq('id', recipient.recipientRowId);
+        for (const variant of variants) {
+          try {
+            const result = await sendTemplateMessage({
+              phoneNumberId: plan.phoneNumberId,
+              accessToken: plan.accessToken,
+              to: variant,
+              templateName: plan.templateName,
+              language: plan.templateLanguage,
+              template: plan.templateRow ?? undefined,
+              params: recipient.params,
+            });
+            sentMessageId = result.messageId;
+            lastError = null;
+            break;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            lastError = message;
+            // Only a "recipient not allowed" error is worth another variant.
+            if (!isRecipientNotAllowedError(message)) break;
+          }
+        }
 
-        if (pausedUpdateErr) {
-          // Fallback if DB constraint hasn't been updated yet
+        if (sentMessageId) {
           await db
             .from('broadcast_recipients')
             .update({
-              status: 'failed',
-              error_message: `[Paused] ${lastError || 'Template is paused'}`,
+              status: 'sent',
+              sent_at: new Date().toISOString(),
+              whatsapp_message_id: sentMessageId,
+              error_message: null,
             })
             .eq('id', recipient.recipientRowId);
-        }
+        } else {
+          const isPaused = isPausedError(lastError);
 
-        // When Meta reports the template is paused, every other recipient
-        // in this campaign will fail. Mark remaining planned recipients as paused,
-        // and also mark ALL remaining pending recipients in the broadcast as paused.
-        const remainingPlanned = plan.planned.slice(idx + 1);
-        if (remainingPlanned.length > 0) {
-          const remainingIds = remainingPlanned.map((r) => r.recipientRowId);
-          const { error: bulkErr } = await db
-            .from('broadcast_recipients')
-            .update({
-              status: 'paused',
-              error_message: lastError || 'Template is paused',
-            })
-            .in('id', remainingIds);
+          if (isPaused) {
+            templatePaused = true;
+            pauseErrorText = lastError || 'Template is paused';
 
-          if (bulkErr) {
+            const { error: pausedUpdateErr } = await db
+              .from('broadcast_recipients')
+              .update({
+                status: 'paused',
+                error_message: lastError || 'Template is paused',
+              })
+              .eq('id', recipient.recipientRowId);
+
+            if (pausedUpdateErr) {
+              await db
+                .from('broadcast_recipients')
+                .update({
+                  status: 'failed',
+                  error_message: `[Paused] ${lastError || 'Template is paused'}`,
+                })
+                .eq('id', recipient.recipientRowId);
+            }
+          } else {
             await db
               .from('broadcast_recipients')
               .update({
                 status: 'failed',
-                error_message: `[Paused] ${lastError || 'Template is paused'}`,
+                error_message: lastError || 'Unknown error',
               })
-              .in('id', remainingIds);
+              .eq('id', recipient.recipientRowId);
           }
         }
+      })
+    );
 
-        // Mark ALL other remaining pending recipients in the entire broadcast as paused
-        const { error: pendingErr } = await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'paused',
-            error_message: lastError || 'Template is paused by Meta',
-          })
-          .eq('broadcast_id', plan.broadcastId)
-          .eq('status', 'pending');
-
-        if (pendingErr) {
-          await db
-            .from('broadcast_recipients')
-            .update({
-              status: 'failed',
-              error_message: `[Paused] ${lastError || 'Template is paused by Meta'}`,
-            })
-            .eq('broadcast_id', plan.broadcastId)
-            .eq('status', 'pending');
-        }
-
-        const { count: exactPaused } = await db
-          .from('broadcast_recipients')
-          .select('id', { count: 'exact', head: true })
-          .eq('broadcast_id', plan.broadcastId)
-          .eq('status', 'paused');
-
-        // Flip broadcast to 'paused' and stamp paused_count
-        await db
-          .from('broadcasts')
-          .update({
-            status: 'paused',
-            paused_count: exactPaused ?? 0,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', plan.broadcastId);
-
-        break;
-      } else {
+    if (templatePaused) {
+      const errText = pauseErrorText || 'Template is paused by Meta';
+      // Mark all remaining planned recipients in this plan as paused
+      const remainingPlanned = plan.planned.slice(idx + CONCURRENCY);
+      if (remainingPlanned.length > 0) {
+        const remainingIds = remainingPlanned.map((r) => r.recipientRowId);
         await db
           .from('broadcast_recipients')
           .update({
-            status: 'failed',
-            error_message: lastError || 'Unknown error',
+            status: 'paused',
+            error_message: errText,
           })
-          .eq('id', recipient.recipientRowId);
+          .in('id', remainingIds);
       }
+
+      // Mark ALL remaining pending recipients in the entire broadcast as paused
+      await db
+        .from('broadcast_recipients')
+        .update({
+          status: 'paused',
+          error_message: errText,
+        })
+        .eq('broadcast_id', plan.broadcastId)
+        .eq('status', 'pending');
+
+      const { count: exactPaused } = await db
+        .from('broadcast_recipients')
+        .select('id', { count: 'exact', head: true })
+        .eq('broadcast_id', plan.broadcastId)
+        .eq('status', 'paused');
+
+      await db
+        .from('broadcasts')
+        .update({
+          status: 'paused',
+          paused_count: exactPaused ?? 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', plan.broadcastId);
+
+      break;
     }
 
-    // Rate-limit buffer between recipients to stay safely under Meta quota
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Rate-limit buffer between batches of 10: 100ms
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
   await finalizeBroadcastStatus(db, plan.broadcastId);
