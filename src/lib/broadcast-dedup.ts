@@ -2,18 +2,23 @@
  * Utilities for campaign history and smart audience de-duplication.
  */
 
+import { isPausedError } from './broadcast-status';
+
 export interface PastRecipientRecord {
   contact_id: string | null;
-  status: 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed' | string;
+  status: 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed' | 'paused' | string;
+  error_message?: string | null;
 }
 
 /**
  * Filter an array of contacts to exclude those who have already received this template.
  *
+ * - Contacts whose previous attempt was PAUSED (or failed due to pause) are NEVER
+ *   treated as failed contacts and are NOT excluded — allowing them to receive the campaign.
  * - By default (excludeFailed = false), contacts whose previous attempt failed
  *   are NOT excluded, allowing users to retry them safely.
- * - When excludeFailed = true, contacts with any prior delivery attempt (including failed)
- *   are excluded to avoid repeatedly pinging unreachable numbers.
+ * - When excludeFailed = true, contacts with genuine failure (unreachable numbers)
+ *   are excluded. Paused contacts are still NOT excluded.
  */
 export function filterAlreadySentContacts<T extends { id: string }>(
   contacts: T[],
@@ -25,10 +30,33 @@ export function filterAlreadySentContacts<T extends { id: string }>(
 
   for (const recipient of pastRecipients) {
     if (!recipient.contact_id) continue;
-    if (!excludeFailed && recipient.status === 'failed') {
-      // Allow retry of failed attempts
+
+    // Check if this recipient was paused or failed due to pause
+    const isPaused =
+      recipient.status === 'paused' ||
+      (recipient.status === 'failed' && isPausedError(recipient.error_message));
+
+    // Paused contacts NEVER count as failed contacts and have not received the template.
+    // They are always eligible to receive the campaign (never excluded here).
+    if (isPaused) {
       continue;
     }
+
+    // Pending contacts have not received the template yet.
+    if (recipient.status === 'pending') {
+      continue;
+    }
+
+    // If status is failed: only exclude if the user explicitly enabled excludeFailed.
+    if (recipient.status === 'failed') {
+      if (!excludeFailed) {
+        continue;
+      }
+      excludedContactIds.add(recipient.contact_id);
+      continue;
+    }
+
+    // Truly sent / delivered / read / replied: recipient received the template.
     excludedContactIds.add(recipient.contact_id);
   }
 

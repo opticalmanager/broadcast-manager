@@ -251,4 +251,22 @@ describe('finalizeBroadcastStatus', () => {
     );
     expect(writes.update?.status).toBe('sent');
   });
+
+  it('marks a broadcast as paused if any recipient is paused', async () => {
+    const writes: { update?: Record<string, unknown> } = {};
+    await finalizeBroadcastStatus(
+      statusDb({ pending: 0, paused: 3, failed: 1 }, 10, writes),
+      'b-1',
+    );
+    expect(writes.update?.status).toBe('paused');
+  });
+
+  it('marks a broadcast as paused if all recipients are paused', async () => {
+    const writes: { update?: Record<string, unknown> } = {};
+    await finalizeBroadcastStatus(
+      statusDb({ pending: 0, paused: 10, failed: 0 }, 10, writes),
+      'b-1',
+    );
+    expect(writes.update?.status).toBe('paused');
+  });
 });

@@ -45,6 +45,10 @@ export const broadcastStatusConfig: Record<BroadcastStatus, StatusDisplay> = {
     label: "failed",
     classes: "bg-red-500/10 text-red-400 border-red-500/20",
   },
+  paused: {
+    label: "paused",
+    classes: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  },
 };
 
 export const recipientStatusConfig: Record<RecipientStatus, StatusDisplay> = {
@@ -72,7 +76,37 @@ export const recipientStatusConfig: Record<RecipientStatus, StatusDisplay> = {
     label: "failed",
     classes: "bg-red-500/10 text-red-400 border-red-500/20",
   },
+  paused: {
+    label: "paused",
+    classes: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  },
 };
+
+/**
+ * Checks whether an error message or Meta error string indicates that
+ * the message failed due to being paused (e.g. Meta error 132015 "Template is paused",
+ * or campaign paused).
+ */
+export function isPausedError(errorMessage?: string | null): boolean {
+  if (!errorMessage) return false;
+  return /pause/i.test(errorMessage) || errorMessage.includes('132015');
+}
+
+/**
+ * Checks if a recipient was paused (either explicitly stamped 'paused'
+ * or previously marked 'failed' due to pause / error 132015).
+ */
+export function isPausedRecipient(recipient?: {
+  status?: string | null;
+  error_message?: string | null;
+} | null): boolean {
+  if (!recipient || !recipient.status) return false;
+  if (recipient.status === 'paused') return true;
+  if (recipient.status === 'failed' && isPausedError(recipient.error_message)) {
+    return true;
+  }
+  return false;
+}
 
 /**
  * Tolerant lookup — callers often have a generic string status

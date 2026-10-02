@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { isPausedError } from '@/lib/broadcast-status';
 
 export type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -71,20 +72,34 @@ export async function calculateAudienceReach(
         let from = 0;
         const PAGE = 1000;
         while (true) {
-          let q = supabase
+          const q = supabase
             .from('broadcast_recipients')
-            .select('contact_id, status')
+            .select('contact_id, status, error_message')
             .in('broadcast_id', slice)
             .range(from, from + PAGE - 1);
-
-          if (!audience.excludeFailedSends) {
-            q = q.neq('status', 'failed');
-          }
 
           const { data: rows, error } = await q;
           if (error || !rows || rows.length === 0) break;
           for (const r of rows) {
-            if (r.contact_id) dedupExcludeSet.add(r.contact_id);
+            if (!r.contact_id) continue;
+            const isPaused =
+              r.status === 'paused' ||
+              (r.status === 'failed' && isPausedError(r.error_message));
+
+            // Paused contacts NEVER count as failed contacts and have not received the template.
+            if (isPaused || r.status === 'pending') {
+              continue;
+            }
+
+            if (r.status === 'failed') {
+              if (audience.excludeFailedSends) {
+                dedupExcludeSet.add(r.contact_id);
+              }
+              continue;
+            }
+
+            // Truly sent, delivered, read, replied
+            dedupExcludeSet.add(r.contact_id);
           }
           if (rows.length < PAGE) break;
           from += PAGE;

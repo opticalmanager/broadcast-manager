@@ -34,11 +34,14 @@ import {
   Trash2,
   PlayCircle,
   RotateCcw,
+  Pause,
+  PauseCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getBroadcastStatus,
   getRecipientStatus,
+  isPausedRecipient,
 } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
 
@@ -121,6 +124,7 @@ const RECIPIENT_STATUSES: readonly RecipientStatus[] = [
   'read',
   'replied',
   'failed',
+  'paused',
 ];
 
 /**
@@ -161,8 +165,9 @@ export default function BroadcastDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [resumingScope, setResumingScope] = useState<
-    'pending' | 'failed' | null
+    'pending' | 'failed' | 'paused' | null
   >(null);
+  const [pausing, setPausing] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -194,13 +199,24 @@ export default function BroadcastDetailPage() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+
+    if (broadcast?.status === 'sending') {
+      const interval = setInterval(() => {
+        fetchData();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchData, broadcast?.status]);
 
   const filteredRecipients = useMemo(
     () =>
       statusFilter === 'all'
         ? recipients
-        : recipients.filter((r) => r.status === statusFilter),
+        : statusFilter === 'paused'
+          ? recipients.filter((r) => isPausedRecipient(r))
+          : statusFilter === 'failed'
+            ? recipients.filter((r) => r.status === 'failed' && !isPausedRecipient(r))
+            : recipients.filter((r) => r.status === statusFilter),
     [recipients, statusFilter],
   );
 
@@ -218,7 +234,7 @@ export default function BroadcastDetailPage() {
     const rows = recipients.map((r) => [
       r.contact?.name ?? '',
       r.contact?.phone ?? '',
-      r.status,
+      isPausedRecipient(r) ? 'paused' : r.status,
       r.sent_at ?? '',
       r.delivered_at ?? '',
       r.read_at ?? '',
@@ -235,9 +251,9 @@ export default function BroadcastDetailPage() {
    * The wizard's send loop lives in the tab that started the campaign,
    * so navigating away strands the rest as 'pending' with the broadcast
    * stuck 'sending'. This is the recovery, and the same call retries
-   * failed recipients.
+   * failed or paused recipients.
    */
-  async function handleResume(scope: 'pending' | 'failed') {
+  async function handleResume(scope: 'pending' | 'failed' | 'paused') {
     setResumingScope(scope);
     try {
       const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/resume`, {
@@ -254,6 +270,12 @@ export default function BroadcastDetailPage() {
           }),
         );
         return;
+      }
+
+      if (payload.deduplicated > 0) {
+        toast.info(
+          `${payload.deduplicated} contacts already received this template in other campaigns and were marked as sent.`
+        );
       }
 
       toast.success(
@@ -275,6 +297,29 @@ export default function BroadcastDetailPage() {
       );
     } finally {
       setResumingScope(null);
+    }
+  }
+
+  async function handlePause() {
+    setPausing(true);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        toast.error(payload?.error || t('toastPauseFailed'));
+        return;
+      }
+
+      toast.success(t('toastPaused'));
+      await fetchData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to pause campaign');
+    } finally {
+      setPausing(false);
     }
   }
 
@@ -320,7 +365,11 @@ export default function BroadcastDetailPage() {
   const status = getBroadcastStatus(broadcast.status);
 
   const pendingCount = recipients.filter((r) => r.status === 'pending').length;
-  const retryableCount = recipients.filter((r) => r.status === 'failed').length;
+  const pausedCount = recipients.filter((r) => isPausedRecipient(r)).length;
+  const failedCount = recipients.filter(
+    (r) => r.status === 'failed' && !isPausedRecipient(r)
+  ).length;
+
   // A campaign whose tab went away sits in 'sending' with recipients
   // still pending and nothing left to move them. Name that state rather
   // than leaving a permanently pulsing "sending" badge.
@@ -365,53 +414,72 @@ export default function BroadcastDetailPage() {
           </div>
         </div>
 
-        {/* Delete — inline-confirm pattern matches the pipeline-settings
-            "Delete Pipeline" flow. Mid-send broadcasts can't be deleted
-            because orphaning in-flight Meta messages would leave the
-            funnel inconsistent. */}
-        {confirmDelete ? (
-          <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
-            <span className="text-red-300">{t('deletePrompt')}</span>
+        <div className="flex items-center gap-2">
+          {broadcast.status === 'sending' && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setConfirmDelete(false)}
-              disabled={deleting}
-              className="h-7 border-border bg-transparent text-muted-foreground hover:bg-muted"
+              onClick={handlePause}
+              disabled={pausing}
+              className="border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
             >
-              {t('cancel')}
+              {pausing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Pause className="h-3.5 w-3.5" />
+              )}
+              {t('pauseCampaign')}
             </Button>
+          )}
+
+          {/* Delete — inline-confirm pattern matches the pipeline-settings
+              "Delete Pipeline" flow. Mid-send broadcasts can't be deleted
+              because orphaning in-flight Meta messages would leave the
+              funnel inconsistent. */}
+          {confirmDelete ? (
+            <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
+              <span className="text-red-300">{t('deletePrompt')}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                className="h-7 border-border bg-transparent text-muted-foreground hover:bg-muted"
+              >
+                {t('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="h-7 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? t('deleting') : t('confirm')}
+              </Button>
+            </div>
+          ) : (
             <Button
+              variant="outline"
               size="sm"
-              onClick={handleDelete}
-              disabled={deleting}
-              className="h-7 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              disabled={broadcast.status === 'sending'}
+              onClick={() => setConfirmDelete(true)}
+              title={
+                broadcast.status === 'sending'
+                  ? t('cannotDeleteSending')
+                  : t('deleteHover')
+              }
+              className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-40"
             >
-              {deleting ? t('deleting') : t('confirm')}
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('delete')}
             </Button>
-          </div>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={broadcast.status === 'sending'}
-            onClick={() => setConfirmDelete(true)}
-            title={
-              broadcast.status === 'sending'
-                ? t('cannotDeleteSending')
-                : t('deleteHover')
-            }
-            className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-40"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('delete')}
-          </Button>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Resume / retry (issue #472). Only rendered when there is
+      {/* Resume / retry / paused banner. Only rendered when there is
           actually something outstanding. */}
-      {(pendingCount > 0 || retryableCount > 0) && (
+      {(pendingCount > 0 || pausedCount > 0 || failedCount > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
           <div className="text-sm">
             <p className="font-medium text-foreground">
@@ -420,7 +488,9 @@ export default function BroadcastDetailPage() {
             <p className="mt-0.5 text-muted-foreground">
               {isStalled
                 ? t('resumeStalledHint', { count: pendingCount })
-                : t('resumeHint', { count: retryableCount })}
+                : pausedCount > 0
+                  ? t('resumePausedHint', { count: pausedCount })
+                  : t('resumeHint', { count: failedCount })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -438,7 +508,22 @@ export default function BroadcastDetailPage() {
                 {t('resumePending', { count: pendingCount })}
               </Button>
             )}
-            {retryableCount > 0 && (
+            {pausedCount > 0 && (
+              <Button
+                size="sm"
+                onClick={() => handleResume('paused')}
+                disabled={resumingScope !== null}
+                className="bg-amber-600 text-white hover:bg-amber-700"
+              >
+                {resumingScope === 'paused' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                {t('retryPaused', { count: pausedCount })}
+              </Button>
+            )}
+            {failedCount > 0 && (
               <Button
                 variant="outline"
                 size="sm"
@@ -451,15 +536,15 @@ export default function BroadcastDetailPage() {
                 ) : (
                   <RotateCcw className="h-3.5 w-3.5" />
                 )}
-                {t('retryFailed', { count: retryableCount })}
+                {t('retryFailed', { count: failedCount })}
               </Button>
             )}
           </div>
         </div>
       )}
 
-      {/* Stats — 6 cards: Total / Sent / Delivered / Read / Replied / Failed */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      {/* Stats — 6 or 7 cards: Total / Sent / Delivered / Read / Replied / Failed / [Paused] */}
+      <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${pausedCount > 0 ? 'lg:grid-cols-7' : 'lg:grid-cols-6'}`}>
         <StatCard
           label={t('stats.totalRecipients')}
           value={broadcast.total_recipients}
@@ -497,11 +582,20 @@ export default function BroadcastDetailPage() {
         />
         <StatCard
           label={t('stats.failed')}
-          value={broadcast.failed_count}
+          value={failedCount}
           total={broadcast.total_recipients}
           icon={<AlertCircle className="h-4 w-4" />}
           color="bg-red-500/10 text-red-400"
         />
+        {pausedCount > 0 && (
+          <StatCard
+            label={t('stats.paused')}
+            value={pausedCount}
+            total={broadcast.total_recipients}
+            icon={<PauseCircle className="h-4 w-4" />}
+            color="bg-amber-500/10 text-amber-500"
+          />
+        )}
       </div>
 
       <FunnelChart steps={funnelSteps} />
@@ -593,7 +687,9 @@ export default function BroadcastDetailPage() {
               </TableHeader>
               <TableBody>
                 {filteredRecipients.map((recipient) => {
-                  const rStatus = getRecipientStatus(recipient.status);
+                  const isPaused = isPausedRecipient(recipient);
+                  const displayStatus = isPaused ? 'paused' : recipient.status;
+                  const rStatus = getRecipientStatus(displayStatus);
                   return (
                     <TableRow key={recipient.id} className="border-border">
                       <TableCell className="font-medium text-foreground">

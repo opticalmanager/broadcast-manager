@@ -95,4 +95,41 @@ describe('filterAlreadySentContacts', () => {
     const result = filterAlreadySentContacts(contacts, pastRecipients);
     expect(result.map((c) => c.id)).toEqual(['c2', 'c3', 'c4']);
   });
+
+  it('does not exclude paused contacts when excludeFailed is true', () => {
+    const pastRecipients: PastRecipientRecord[] = [
+      { contact_id: 'c1', status: 'sent' },
+      { contact_id: 'c2', status: 'failed' },
+      { contact_id: 'c3', status: 'paused' },
+    ];
+    const result = filterAlreadySentContacts(contacts, pastRecipients, {
+      excludeFailed: true,
+    });
+    // c1 excluded (sent), c2 excluded (failed), c3 kept because it was only paused, c4 kept
+    expect(result.map((c) => c.id)).toEqual(['c3', 'c4']);
+  });
+
+  it('does not exclude contacts failed due to pause error when excludeFailed is true', () => {
+    const pastRecipients: PastRecipientRecord[] = [
+      { contact_id: 'c1', status: 'failed', error_message: 'Invalid phone' },
+      { contact_id: 'c2', status: 'failed', error_message: 'Template is paused (code 132015)' },
+    ];
+    const result = filterAlreadySentContacts(contacts, pastRecipients, {
+      excludeFailed: true,
+    });
+    // c1 excluded (real failure), c2 kept because it was paused, c3 and c4 kept
+    expect(result.map((c) => c.id)).toEqual(['c2', 'c3', 'c4']);
+  });
+
+  it('allows paused contacts to be sent when deduplicating against template', () => {
+    const pastRecipients: PastRecipientRecord[] = [
+      { contact_id: 'c1', status: 'paused' },
+      { contact_id: 'c2', status: 'delivered' },
+    ];
+    // Default excludeFailed: false
+    const result = filterAlreadySentContacts(contacts, pastRecipients);
+    // c1 is paused (not yet successfully received), c2 received, c3 and c4 never attempted
+    expect(result.map((c) => c.id)).toEqual(['c1', 'c3', 'c4']);
+  });
 });
+

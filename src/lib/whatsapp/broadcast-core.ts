@@ -18,6 +18,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { isPausedError } from '@/lib/broadcast-status';
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import {
@@ -262,7 +263,21 @@ export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
-  for (const recipient of plan.planned) {
+  for (let idx = 0; idx < plan.planned.length; idx++) {
+    const recipient = plan.planned[idx];
+
+    // Check if the broadcast itself has been paused by the user mid-send
+    const { data: bcastCheck } = await db
+      .from('broadcasts')
+      .select('status')
+      .eq('id', plan.broadcastId)
+      .maybeSingle();
+
+    if (bcastCheck?.status === 'paused') {
+      // Broadcast was paused — stop delivery pass immediately
+      break;
+    }
+
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
@@ -300,14 +315,75 @@ export async function deliverBroadcast(
         })
         .eq('id', recipient.recipientRowId);
     } else {
-      await db
-        .from('broadcast_recipients')
-        .update({
-          status: 'failed',
-          error_message: lastError || 'Unknown error',
-        })
-        .eq('id', recipient.recipientRowId);
+      const isPaused = isPausedError(lastError);
+
+      if (isPaused) {
+        // Do NOT mark numbers which failed due to paused as failed!
+        // Mark as 'paused'.
+        const { error: pausedUpdateErr } = await db
+          .from('broadcast_recipients')
+          .update({
+            status: 'paused',
+            error_message: lastError || 'Template is paused',
+          })
+          .eq('id', recipient.recipientRowId);
+
+        if (pausedUpdateErr) {
+          // Fallback if DB constraint hasn't been updated yet
+          await db
+            .from('broadcast_recipients')
+            .update({
+              status: 'failed',
+              error_message: `[Paused] ${lastError || 'Template is paused'}`,
+            })
+            .eq('id', recipient.recipientRowId);
+        }
+
+        // When Meta reports the template is paused, every other recipient
+        // in this pass with the same template will fail. Mark remaining planned
+        // recipients as paused and stop to avoid hitting rate limits or logging bogus failures.
+        const remainingPlanned = plan.planned.slice(idx + 1);
+        if (remainingPlanned.length > 0) {
+          const remainingIds = remainingPlanned.map((r) => r.recipientRowId);
+          const { error: bulkErr } = await db
+            .from('broadcast_recipients')
+            .update({
+              status: 'paused',
+              error_message: lastError || 'Template is paused',
+            })
+            .in('id', remainingIds);
+
+          if (bulkErr) {
+            await db
+              .from('broadcast_recipients')
+              .update({
+                status: 'failed',
+                error_message: `[Paused] ${lastError || 'Template is paused'}`,
+              })
+              .in('id', remainingIds);
+          }
+        }
+
+        // Flip broadcast to 'paused'
+        await db
+          .from('broadcasts')
+          .update({ status: 'paused', updated_at: new Date().toISOString() })
+          .eq('id', plan.broadcastId);
+
+        break;
+      } else {
+        await db
+          .from('broadcast_recipients')
+          .update({
+            status: 'failed',
+            error_message: lastError || 'Unknown error',
+          })
+          .eq('id', recipient.recipientRowId);
+      }
     }
+
+    // Rate-limit buffer between recipients to stay safely under Meta quota
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
   await finalizeBroadcastStatus(db, plan.broadcastId);
@@ -322,6 +398,8 @@ export async function deliverBroadcast(
  * 800 of its 1 000 recipients went out earlier. `failed` means every
  * single recipient failed; anything else that reached Meta is `sent`,
  * with the per-recipient failures visible in `failed_count`.
+ *
+ * If recipients are paused, the campaign is finalized as `paused`.
  *
  * Per-status counts stay trigger-owned (migrations 003/005) — only the
  * terminal `status` is written here.
@@ -343,16 +421,24 @@ export async function finalizeBroadcastStatus(
   // so the UI keeps offering Resume.
   if ((await countWhere('pending')) > 0) return;
 
+  const paused = await countWhere('paused');
   const failed = await countWhere('failed');
   const { count: total } = await db
     .from('broadcast_recipients')
     .select('id', { count: 'exact', head: true })
     .eq('broadcast_id', broadcastId);
 
+  let finalStatus: string = 'sent';
+  if (paused > 0) {
+    finalStatus = 'paused';
+  } else if (failed > 0 && failed === (total ?? 0)) {
+    finalStatus = 'failed';
+  }
+
   await db
     .from('broadcasts')
     .update({
-      status: failed > 0 && failed === (total ?? 0) ? 'failed' : 'sent',
+      status: finalStatus,
       updated_at: new Date().toISOString(),
     })
     .eq('id', broadcastId);

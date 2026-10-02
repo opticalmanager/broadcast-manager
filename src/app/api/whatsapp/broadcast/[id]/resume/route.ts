@@ -82,7 +82,7 @@ export async function POST(
     }
     claimedId = id;
 
-    const { plan, remaining, unsendable } = await planBroadcastResume(
+    const { plan, remaining, unsendable, deduplicated } = await planBroadcastResume(
       supabase,
       accountId,
       id,
@@ -98,7 +98,13 @@ export async function POST(
     const admin = supabaseAdmin();
     after(async () => {
       try {
-        await deliverBroadcast(admin, plan);
+        let currentPlan = plan;
+        while (true) {
+          await deliverBroadcast(admin, currentPlan);
+          const next = await planBroadcastResume(admin, accountId, id, scope).catch(() => null);
+          if (!next || next.plan.planned.length === 0) break;
+          currentPlan = next.plan;
+        }
       } catch (err) {
         console.error(
           '[broadcast-resume] delivery threw:',
@@ -122,6 +128,8 @@ export async function POST(
         remaining,
         // Recipients stamped failed up front for want of a phone number.
         unsendable,
+        // Recipients skipped because they already received this template in another campaign.
+        deduplicated: deduplicated ?? 0,
       },
       { status: 202 }
     );

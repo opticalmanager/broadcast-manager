@@ -117,28 +117,40 @@ interface PlanFixture {
   recipients?: Record<string, unknown>[];
   config?: Record<string, unknown> | null;
   templates?: Record<string, unknown>[];
+  siblingBroadcasts?: Record<string, unknown>[];
+  deliveredRecipients?: Record<string, unknown>[];
 }
 
 interface PlanWrites {
   statusFilter?: unknown;
   failedIds?: unknown;
   failedUpdate?: Record<string, unknown>;
+  sentIds?: unknown;
+  sentUpdate?: Record<string, unknown>;
 }
 
 function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
   return {
     from(table: string) {
+      let hasInBroadcastId = false;
       const b: Record<string, unknown> = {
         select: () => b,
         eq: () => b,
         order: () => b,
         in: (col: string, vals: unknown) => {
           if (col === 'status') writes.statusFilter = vals;
-          if (col === 'id') writes.failedIds = vals;
+          if (col === 'id') {
+            if (writes.sentUpdate) writes.sentIds = vals;
+            else writes.failedIds = vals;
+          }
+          if (col === 'broadcast_id') {
+            hasInBroadcastId = true;
+          }
           return b;
         },
         update: (row: Record<string, unknown>) => {
-          writes.failedUpdate = row;
+          if (row.status === 'sent') writes.sentUpdate = row;
+          else writes.failedUpdate = row;
           return b;
         },
         maybeSingle: async () => ({
@@ -151,7 +163,13 @@ function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
         }),
         then: (resolve: (r: { data: unknown[]; error: null }) => unknown) => {
           if (table === 'broadcast_recipients') {
+            if (hasInBroadcastId) {
+              return resolve({ data: fx.deliveredRecipients ?? [], error: null });
+            }
             return resolve({ data: fx.recipients ?? [], error: null });
+          }
+          if (table === 'broadcasts') {
+            return resolve({ data: fx.siblingBroadcasts ?? [], error: null });
           }
           if (table === 'message_templates') {
             return resolve({ data: fx.templates ?? [], error: null });
@@ -176,11 +194,13 @@ function recipient(
   id: string,
   phone: string | null,
   params: unknown = ['A123'],
+  extra: Record<string, unknown> = {},
 ) {
   return {
     id,
     template_params: params,
     contact: phone ? { phone } : null,
+    ...extra,
   };
 }
 
@@ -256,7 +276,129 @@ describe('planBroadcastResume', () => {
       'bc-1',
       'all',
     );
-    expect(allWrites.statusFilter).toEqual(['pending', 'failed']);
+    expect(allWrites.statusFilter).toEqual(['pending', 'failed', 'paused']);
+  });
+
+  it('scopes to paused rows and filters out non-paused failures', async () => {
+    const pausedWrites: PlanWrites = {};
+    const { plan } = await planBroadcastResume(
+      planDb(
+        {
+          broadcast: BROADCAST,
+          config: CONFIG,
+          recipients: [
+            recipient('r1', '+15551234567', ['A1'], { status: 'paused' }),
+            recipient('r2', '+15559876543', ['A2'], {
+              status: 'failed',
+              error_message: 'Template is paused (code 132015)',
+            }),
+            recipient('r3', '+15550001111', ['A3'], {
+              status: 'failed',
+              error_message: 'Invalid recipient',
+            }),
+          ],
+        },
+        pausedWrites,
+      ),
+      'acct-1',
+      'bc-1',
+      'paused',
+    );
+
+    expect(pausedWrites.statusFilter).toEqual(['paused', 'failed']);
+    // r1 (paused) and r2 (failed with pause error) planned, r3 (real failure) ignored
+    expect(plan.planned.map((p) => p.recipientRowId)).toEqual(['r1', 'r2']);
+  });
+
+  it('excludes paused recipients when scope is failed', async () => {
+    const writes: PlanWrites = {};
+    const { plan } = await planBroadcastResume(
+      planDb(
+        {
+          broadcast: BROADCAST,
+          config: CONFIG,
+          recipients: [
+            recipient('r1', '+15551234567', ['A1'], {
+              status: 'failed',
+              error_message: 'Invalid recipient',
+            }),
+            recipient('r2', '+15559876543', ['A2'], { status: 'paused' }),
+            recipient('r3', '+15550001111', ['A3'], {
+              status: 'failed',
+              error_message: 'Template is paused',
+            }),
+          ],
+        },
+        writes,
+      ),
+      'acct-1',
+      'bc-1',
+      'failed',
+    );
+
+    expect(writes.statusFilter).toEqual(['failed']);
+    // r2 (paused) and r3 (pause error) are excluded from failed retry
+    expect(plan.planned.map((p) => p.recipientRowId)).toEqual(['r1']);
+  });
+
+  it('deduplicates paused contacts that already received template in sibling broadcast', async () => {
+    const writes: PlanWrites = {};
+    const { plan } = await planBroadcastResume(
+      planDb(
+        {
+          broadcast: BROADCAST,
+          config: CONFIG,
+          recipients: [
+            recipient('r1', '+15551234567', ['A1'], {
+              contact_id: 'c1',
+              contact: { id: 'c1', phone: '+15551234567' },
+              status: 'paused',
+            }),
+            recipient('r2', '+15559876543', ['A2'], {
+              contact_id: 'c2',
+              contact: { id: 'c2', phone: '+15559876543' },
+              status: 'paused',
+            }),
+          ],
+          siblingBroadcasts: [{ id: 'sibling-1' }],
+          deliveredRecipients: [{ contact_id: 'c1' }],
+        },
+        writes,
+      ),
+      'acct-1',
+      'bc-1',
+      'paused',
+    );
+
+    // c1 already received the template in sibling-1, so it is marked sent and not delivered again
+    expect(writes.sentIds).toEqual(['r1']);
+    expect(writes.sentUpdate?.status).toBe('sent');
+    expect(plan.planned.map((p) => p.recipientRowId)).toEqual(['r2']);
+  });
+
+  it('throws friendly error if all paused contacts already received the template', async () => {
+    await expect(
+      planBroadcastResume(
+        planDb({
+          broadcast: BROADCAST,
+          config: CONFIG,
+          recipients: [
+            recipient('r1', '+15551234567', ['A1'], {
+              contact_id: 'c1',
+              contact: { id: 'c1', phone: '+15551234567' },
+              status: 'paused',
+            }),
+          ],
+          siblingBroadcasts: [{ id: 'sibling-1' }],
+          deliveredRecipients: [{ contact_id: 'c1' }],
+        }),
+        'acct-1',
+        'bc-1',
+        'paused',
+      ),
+    ).rejects.toThrow(
+      'All paused contacts have already received this template in other campaigns. No duplicates were sent.',
+    );
   });
 
   it('treats a missing or malformed params column as no params', async () => {

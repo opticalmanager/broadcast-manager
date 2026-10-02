@@ -410,8 +410,8 @@ export interface Deal {
   assignee?: Profile;
 }
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
-export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed' | 'paused';
+export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed' | 'paused';
 
 export interface Broadcast {
   id: string;
@@ -429,6 +429,7 @@ export interface Broadcast {
   read_count: number;
   replied_count: number;
   failed_count: number;
+  paused_count?: number;
   /**
    * Set while a server-side delivery pass is fanning out, NULL when
    * idle. Claimed with a conditional UPDATE so two resumes can't both

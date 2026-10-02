@@ -18,17 +18,23 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { BroadcastError, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
+import {
+  BroadcastError,
+  finalizeBroadcastStatus,
+  type BroadcastPlan,
+} from '@/lib/whatsapp/broadcast-core';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
+import { isPausedRecipient } from '@/lib/broadcast-status';
 
 /** Which recipients a resume pass picks up. */
-export type ResumeScope = 'pending' | 'failed' | 'all';
+export type ResumeScope = 'pending' | 'failed' | 'paused' | 'all';
 
 export const RESUME_SCOPES: readonly ResumeScope[] = [
   'pending',
   'failed',
+  'paused',
   'all',
 ];
 
@@ -53,7 +59,8 @@ export const DELIVERY_LOCK_STALE_MS = 30 * 60 * 1000;
 function scopeStatuses(scope: ResumeScope): string[] {
   if (scope === 'pending') return ['pending'];
   if (scope === 'failed') return ['failed'];
-  return ['pending', 'failed'];
+  if (scope === 'paused') return ['paused', 'failed'];
+  return ['pending', 'failed', 'paused'];
 }
 
 /**
@@ -113,18 +120,29 @@ export interface ResumePlan {
    * they stop blocking the broadcast's terminal status.
    */
   unsendable: number;
+  /** Contacts who were skipped because they already received this template in another broadcast. */
+  deduplicated?: number;
 }
 
 interface RecipientRow {
   id: string;
+  contact_id?: string | null;
+  status: string;
+  error_message?: string | null;
   template_params: unknown;
-  contact: { phone?: string | null } | { phone?: string | null }[] | null;
+  contact: { id?: string | null; phone?: string | null } | { id?: string | null; phone?: string | null }[] | null;
 }
 
 /** Supabase renders an embedded to-one join as an object or a 1-array. */
 function contactPhone(row: RecipientRow): string | null {
   const c = Array.isArray(row.contact) ? row.contact[0] : row.contact;
   return c?.phone ?? null;
+}
+
+function contactId(row: RecipientRow): string | null {
+  if (row.contact_id) return row.contact_id;
+  const c = Array.isArray(row.contact) ? row.contact[0] : row.contact;
+  return c?.id ?? null;
 }
 
 /**
@@ -158,7 +176,7 @@ export async function planBroadcastResume(
   const statuses = scopeStatuses(scope);
   const { data: rawRows, error: recError } = await db
     .from('broadcast_recipients')
-    .select('id, template_params, contact:contacts(phone)')
+    .select('id, contact_id, status, error_message, template_params, contact:contacts(id, phone)')
     .eq('broadcast_id', broadcastId)
     .in('status', statuses)
     // Oldest first, so repeated capped passes chew through the backlog
@@ -172,12 +190,23 @@ export async function planBroadcastResume(
 
   const rows = (rawRows ?? []) as RecipientRow[];
 
+  // Filter candidates according to exact scope:
+  // - 'failed': only genuine failures (exclude paused)
+  // - 'paused': only paused (status = 'paused' or failed with pause error)
+  // - 'pending': only pending
+  // - 'all': all
+  const candidateRows = rows.filter((r) => {
+    if (scope === 'failed') return !isPausedRecipient(r);
+    if (scope === 'paused') return isPausedRecipient(r);
+    return true;
+  });
+
   // A recipient whose contact has no usable phone can never send. Stamp
   // it failed now: leaving it 'pending' would keep the broadcast in
   // 'sending' forever, which is the very symptom being fixed.
   const sendable: RecipientRow[] = [];
   const unsendable: string[] = [];
-  for (const row of rows) {
+  for (const row of candidateRows) {
     const sanitized = sanitizePhoneForMeta(contactPhone(row) ?? '');
     if (isValidE164(sanitized)) sendable.push(row);
     else unsendable.push(row.id);
@@ -192,15 +221,96 @@ export async function planBroadcastResume(
       .in('id', unsendable);
   }
 
-  const slice = sendable.slice(0, RESUME_MAX_PER_REQUEST);
-  const remaining = sendable.length - slice.length;
+  // Smart deduplication check for paused retries:
+  // Make sure those paused contacts didn't already receive a campaign with the same template!
+  let deduplicatedSendable = sendable;
+  let deduplicatedCount = 0;
+
+  if (scope === 'paused' || scope === 'all') {
+    const targetContactIds = Array.from(
+      new Set(
+        sendable
+          .map((r) => contactId(r))
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+
+    if (targetContactIds.length > 0) {
+      const { data: siblingBroadcasts } = await db
+        .from('broadcasts')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('template_name', broadcast.template_name);
+
+      const siblingIds = (siblingBroadcasts ?? []).map((b) => b.id);
+      if (siblingIds.length > 0) {
+        const alreadyReceivedContactIds = new Set<string>();
+        const CHUNK = 500;
+        for (let i = 0; i < siblingIds.length; i += CHUNK) {
+          const bcastChunk = siblingIds.slice(i, i + CHUNK);
+          for (let j = 0; j < targetContactIds.length; j += CHUNK) {
+            const contactChunk = targetContactIds.slice(j, j + CHUNK);
+            const { data: recRows } = await db
+              .from('broadcast_recipients')
+              .select('contact_id')
+              .in('broadcast_id', bcastChunk)
+              .in('contact_id', contactChunk)
+              .in('status', ['sent', 'delivered', 'read', 'replied']);
+
+            for (const r of recRows ?? []) {
+              if (r.contact_id) alreadyReceivedContactIds.add(r.contact_id);
+            }
+          }
+        }
+
+        if (alreadyReceivedContactIds.size > 0) {
+          const alreadyDeliveredRowIds: string[] = [];
+          const filtered: RecipientRow[] = [];
+
+          for (const row of sendable) {
+            const cid = contactId(row);
+            if (cid && alreadyReceivedContactIds.has(cid)) {
+              alreadyDeliveredRowIds.push(row.id);
+            } else {
+              filtered.push(row);
+            }
+          }
+
+          if (alreadyDeliveredRowIds.length > 0) {
+            // Contact already got this template in another broadcast — mark as sent without duplicate sending!
+            await db
+              .from('broadcast_recipients')
+              .update({
+                status: 'sent',
+                error_message: null,
+              })
+              .in('id', alreadyDeliveredRowIds);
+
+            deduplicatedCount = alreadyDeliveredRowIds.length;
+            deduplicatedSendable = filtered;
+          }
+        }
+      }
+    }
+  }
+
+  const finalSendable = deduplicatedSendable;
+  const slice = finalSendable.slice(0, RESUME_MAX_PER_REQUEST);
+  const remaining = finalSendable.length - slice.length;
 
   if (slice.length === 0) {
+    if (deduplicatedCount > 0) {
+      await finalizeBroadcastStatus(db, broadcastId);
+    }
     throw new BroadcastError(
       'nothing_to_resume',
       scope === 'failed'
         ? 'This broadcast has no failed recipients to retry'
-        : 'This broadcast has no recipients left to send',
+        : scope === 'paused'
+          ? deduplicatedCount > 0
+            ? 'All paused contacts have already received this template in other campaigns. No duplicates were sent.'
+            : 'This broadcast has no paused recipients to retry'
+          : 'This broadcast has no recipients left to send',
       400
     );
   }
