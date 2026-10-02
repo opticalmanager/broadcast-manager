@@ -123,7 +123,7 @@ export async function calculateAudienceReach(
     if (audience.excludeAlreadySentThisTemplate && dedupExcludeSet.size > 0) {
       const excludedContactIds = Array.from(dedupExcludeSet);
       const excludedPhones = new Set<string>();
-      const CHUNK = 500;
+      const CHUNK = 100;
       for (let i = 0; i < excludedContactIds.length; i += CHUNK) {
         const slice = excludedContactIds.slice(i, i + CHUNK);
         const { data: matched } = await supabase

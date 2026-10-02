@@ -224,7 +224,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           ...new Set(allContactTags.map((ct) => ct.contact_id)),
         ];
         const contactsList: Contact[] = [];
-        const IN_PAGE = 500;
+        const IN_PAGE = 100;
         for (let i = 0; i < uniqueContactIds.length; i += IN_PAGE) {
           const slice = uniqueContactIds.slice(i, i + IN_PAGE);
           const { data, error } = await supabase
@@ -284,7 +284,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       if (pastBroadcasts && pastBroadcasts.length > 0) {
         const pastIds = pastBroadcasts.map((b) => b.id);
         const allPastRecipients: { contact_id: string; status: string; error_message?: string | null }[] = [];
-        const CHUNK = 500;
+        const CHUNK = 50;
         for (let i = 0; i < pastIds.length; i += CHUNK) {
           const idChunk = pastIds.slice(i, i + CHUNK);
           let from = 0;

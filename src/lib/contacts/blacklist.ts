@@ -53,7 +53,7 @@ export async function getBlacklistedPhones(
   if (blacklistedIds.size === 0) return phones;
 
   const idList = Array.from(blacklistedIds);
-  const CHUNK = 500;
+  const CHUNK = 100;
   for (let i = 0; i < idList.length; i += CHUNK) {
     const chunk = idList.slice(i, i + CHUNK);
     const { data: contacts } = await db

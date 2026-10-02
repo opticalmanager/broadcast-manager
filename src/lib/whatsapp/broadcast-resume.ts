@@ -176,17 +176,8 @@ export async function planBroadcastResume(
     throw new BroadcastError('not_found', 'Broadcast not found', 404);
   }
 
-  if (broadcast.status === 'paused') {
-    // If the broadcast was paused, ensure all unsent recipients are marked as 'paused'
-    await db
-      .from('broadcast_recipients')
-      .update({
-        status: 'paused',
-        error_message: 'Campaign paused',
-      })
-      .eq('broadcast_id', broadcastId)
-      .eq('status', 'pending');
-  }
+  // Note: pending rows in paused campaigns are naturally treated as paused
+  // candidates in candidateRows filtering below without needing SQL status updates.
 
   const statuses = scopeStatuses(scope, broadcast.status);
   const { data: rawRows, error: recError } = await db
@@ -252,68 +243,69 @@ export async function planBroadcastResume(
   let deduplicatedCount = 0;
 
   if (scope === 'paused' || scope === 'all') {
-    const targetContactIds = Array.from(
-      new Set(
-        sendable
-          .map((r) => contactId(r))
-          .filter((id): id is string => Boolean(id))
-      )
-    );
+    const { data: siblingBroadcasts } = await db
+      .from('broadcasts')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('template_name', broadcast.template_name);
 
-    if (targetContactIds.length > 0) {
-      const { data: siblingBroadcasts } = await db
-        .from('broadcasts')
-        .select('id')
-        .eq('account_id', accountId)
-        .eq('template_name', broadcast.template_name);
+    const siblingIds = (siblingBroadcasts ?? [])
+      .map((b) => b.id)
+      .filter((bid) => bid !== broadcastId);
+    if (siblingIds.length > 0) {
+      const alreadyReceivedContactIds = new Set<string>();
+      let recFrom = 0;
+      const REC_PAGE = 1000;
+      while (true) {
+        let q = db
+          .from('broadcast_recipients')
+          .select('contact_id')
+          .in('broadcast_id', siblingIds)
+          .in('status', ['sent', 'delivered', 'read', 'replied']);
 
-      const siblingIds = (siblingBroadcasts ?? []).map((b) => b.id);
-      if (siblingIds.length > 0) {
-        const alreadyReceivedContactIds = new Set<string>();
-        const CHUNK = 500;
-        for (let i = 0; i < siblingIds.length; i += CHUNK) {
-          const bcastChunk = siblingIds.slice(i, i + CHUNK);
-          for (let j = 0; j < targetContactIds.length; j += CHUNK) {
-            const contactChunk = targetContactIds.slice(j, j + CHUNK);
-            const { data: recRows } = await db
-              .from('broadcast_recipients')
-              .select('contact_id')
-              .in('broadcast_id', bcastChunk)
-              .in('contact_id', contactChunk)
-              .in('status', ['sent', 'delivered', 'read', 'replied']);
+        const hasRange = typeof (q as { range?: unknown }).range === 'function';
+        if (hasRange) {
+          q = q.range(recFrom, recFrom + REC_PAGE - 1);
+        }
 
-            for (const r of recRows ?? []) {
-              if (r.contact_id) alreadyReceivedContactIds.add(r.contact_id);
-            }
+        const { data: recRows, error: recErr } = await q;
+
+        if (recErr || !recRows || recRows.length === 0) break;
+        for (const r of recRows) {
+          if (r.contact_id) alreadyReceivedContactIds.add(r.contact_id);
+        }
+        if (!hasRange || recRows.length < REC_PAGE) break;
+        recFrom += REC_PAGE;
+      }
+
+      if (alreadyReceivedContactIds.size > 0) {
+        const alreadyDeliveredRowIds: string[] = [];
+        const filtered: RecipientRow[] = [];
+
+        for (const row of sendable) {
+          const cid = contactId(row);
+          if (cid && alreadyReceivedContactIds.has(cid)) {
+            alreadyDeliveredRowIds.push(row.id);
+          } else {
+            filtered.push(row);
           }
         }
 
-        if (alreadyReceivedContactIds.size > 0) {
-          const alreadyDeliveredRowIds: string[] = [];
-          const filtered: RecipientRow[] = [];
-
-          for (const row of sendable) {
-            const cid = contactId(row);
-            if (cid && alreadyReceivedContactIds.has(cid)) {
-              alreadyDeliveredRowIds.push(row.id);
-            } else {
-              filtered.push(row);
-            }
-          }
-
-          if (alreadyDeliveredRowIds.length > 0) {
-            // Contact already got this template in another broadcast — mark as sent without duplicate sending!
+        if (alreadyDeliveredRowIds.length > 0) {
+          // Contact already got this template in another broadcast — mark as sent without duplicate sending!
+          const BATCH = 100;
+          for (let k = 0; k < alreadyDeliveredRowIds.length; k += BATCH) {
             await db
               .from('broadcast_recipients')
               .update({
                 status: 'sent',
                 error_message: null,
               })
-              .in('id', alreadyDeliveredRowIds);
-
-            deduplicatedCount = alreadyDeliveredRowIds.length;
-            deduplicatedSendable = filtered;
+              .in('id', alreadyDeliveredRowIds.slice(k, k + BATCH));
           }
+
+          deduplicatedCount = alreadyDeliveredRowIds.length;
+          deduplicatedSendable = filtered;
         }
       }
     }

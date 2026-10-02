@@ -15,8 +15,12 @@ import { NextResponse } from 'next/server';
 import { after } from 'next/server';
 
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
-import { deliverBroadcast } from '@/lib/whatsapp/broadcast-core';
-import { planBroadcastResume } from '@/lib/whatsapp/broadcast-resume';
+import { deliverBroadcast, finalizeBroadcastStatus } from '@/lib/whatsapp/broadcast-core';
+import {
+  claimBroadcastDelivery,
+  planBroadcastResume,
+  releaseBroadcastDelivery,
+} from '@/lib/whatsapp/broadcast-resume';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { isPausedRecipient } from '@/lib/broadcast-status';
 import { getBlacklistedContactIds } from '@/lib/contacts/blacklist';
@@ -136,43 +140,36 @@ export async function POST(
       );
     }
 
-    // 4. Smart De-duplication against other broadcasts with the same template
-    const targetContactIds = Array.from(
-      new Set(
-        candidates
-          .map((r) => r.contact_id)
-          .filter((cid): cid is string => Boolean(cid))
-      )
-    );
-
+    // 4. Fast & Scalable Smart De-duplication against other broadcasts with the same template
+    // Query already delivered contacts across sibling broadcasts directly to avoid large URL headers.
     const alreadyDeliveredSet = new Set<string>();
 
-    if (targetContactIds.length > 0) {
-      const { data: siblingBroadcasts } = await admin
-        .from('broadcasts')
-        .select('id')
-        .eq('account_id', accountId)
-        .eq('template_name', original.template_name);
+    const { data: siblingBroadcasts } = await admin
+      .from('broadcasts')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('template_name', original.template_name);
 
-      const siblingIds = (siblingBroadcasts ?? []).map((b) => b.id);
-      if (siblingIds.length > 0) {
-        const CHUNK = 500;
-        for (let i = 0; i < siblingIds.length; i += CHUNK) {
-          const bcastChunk = siblingIds.slice(i, i + CHUNK);
-          for (let j = 0; j < targetContactIds.length; j += CHUNK) {
-            const contactChunk = targetContactIds.slice(j, j + CHUNK);
-            const { data: recRows } = await admin
-              .from('broadcast_recipients')
-              .select('contact_id')
-              .in('broadcast_id', bcastChunk)
-              .in('contact_id', contactChunk)
-              .in('status', ['sent', 'delivered', 'read', 'replied']);
+    const siblingIds = (siblingBroadcasts ?? [])
+      .map((b) => b.id)
+      .filter((bid) => bid !== original.id);
+    if (siblingIds.length > 0) {
+      let recFrom = 0;
+      const REC_PAGE = 1000;
+      while (true) {
+        const { data: recRows, error: recErr } = await admin
+          .from('broadcast_recipients')
+          .select('contact_id')
+          .in('broadcast_id', siblingIds)
+          .in('status', ['sent', 'delivered', 'read', 'replied'])
+          .range(recFrom, recFrom + REC_PAGE - 1);
 
-            for (const r of recRows ?? []) {
-              if (r.contact_id) alreadyDeliveredSet.add(r.contact_id);
-            }
-          }
+        if (recErr || !recRows || recRows.length === 0) break;
+        for (const r of recRows) {
+          if (r.contact_id) alreadyDeliveredSet.add(r.contact_id);
         }
+        if (recRows.length < REC_PAGE) break;
+        recFrom += REC_PAGE;
       }
     }
 
@@ -247,7 +244,7 @@ export async function POST(
       template_params: c.template_params ?? [],
     }));
 
-    const INSERT_CHUNK = 500;
+    const INSERT_CHUNK = 1000;
     for (let i = 0; i < newRecipientRows.length; i += INSERT_CHUNK) {
       const chunk = newRecipientRows.slice(i, i + INSERT_CHUNK);
       const { error: insertErr } = await admin
@@ -267,18 +264,30 @@ export async function POST(
       }
     }
 
-    // 7. Dispatch background delivery via after()
+    // 7. Dispatch background delivery via after() with complete pass loop
     after(async () => {
       try {
-        const { plan } = await planBroadcastResume(
-          admin,
-          accountId,
-          newBroadcast.id,
-          'pending'
-        );
-        await deliverBroadcast(admin, plan);
+        await claimBroadcastDelivery(admin, accountId, newBroadcast.id);
+        while (true) {
+          const res = await planBroadcastResume(
+            admin,
+            accountId,
+            newBroadcast.id,
+            'pending'
+          ).catch((err) => {
+            console.error('[retry-campaign] plan error in background delivery pass:', err);
+            return null;
+          });
+
+          if (!res || res.plan.planned.length === 0) break;
+          await deliverBroadcast(admin, res.plan);
+          if (res.remaining === 0) break;
+        }
       } catch (err) {
         console.error('[retry-campaign] background delivery pass failed:', err);
+      } finally {
+        await finalizeBroadcastStatus(admin, newBroadcast.id).catch(() => {});
+        await releaseBroadcastDelivery(admin, newBroadcast.id).catch(() => {});
       }
     });
 
