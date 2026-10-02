@@ -9,7 +9,7 @@ describe('Web App Manifest', () => {
     expect(m.short_name).toBe('Broadcast CRM');
     expect(m.display).toBe('standalone');
     expect(m.start_url).toBe('/');
-    expect(m.theme_color).toBe('#7c3aed');
+    expect(m.theme_color).toBe('#22c55e');
     expect(m.background_color).toBe('#020617');
   });
 

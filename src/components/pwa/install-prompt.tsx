@@ -34,7 +34,7 @@ export function InstallPrompt() {
             </button>
 
             <div className="flex items-center gap-3">
-              <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary text-white shadow-md">
+              <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-emerald-500 text-white shadow-md">
                 <Image
                   src="/icons/icon-192x192.png"
                   alt="Broadcast Manager"
@@ -100,8 +100,8 @@ export function InstallPrompt() {
             </button>
 
             <div className="flex flex-col items-center text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <Smartphone className="h-7 w-7 text-primary" />
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-500">
+                <Smartphone className="h-7 w-7 text-emerald-500" />
               </div>
               <h3 className="mt-3 text-lg font-bold text-foreground">
                 Install on iPhone or iPad
@@ -128,7 +128,7 @@ export function InstallPrompt() {
               <div className="h-px bg-border/40" />
 
               <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-bold">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500 font-bold">
                   2
                 </div>
                 <div className="flex-1">
