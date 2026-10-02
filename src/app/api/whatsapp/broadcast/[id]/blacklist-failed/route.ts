@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -11,6 +11,14 @@ export async function POST(
     if (!id) {
       return NextResponse.json({ error: 'Broadcast ID is required' }, { status: 400 });
     }
+
+    const body = await request.json().catch(() => ({}));
+    const targetCode: '131026' | '131049' | 'all' =
+      body.targetCode === '131026'
+        ? '131026'
+        : body.targetCode === '131049'
+          ? '131049'
+          : 'all';
 
     const supabase = await createClient();
     const {
@@ -78,21 +86,30 @@ export async function POST(
       tagId = newTag.id;
     }
 
-    // 3. Fetch all contact IDs with genuine failure (not paused)
+    // 3. Fetch all contact IDs matching the target failure code
     const targetContactIds = new Set<string>();
     const PAGE_SIZE = 1000;
     let from = 0;
     let hasMore = true;
 
     while (hasMore) {
-      const { data: rows, error: recErr } = await admin
+      let q = admin
         .from('broadcast_recipients')
         .select('contact_id, error_message')
         .eq('broadcast_id', id)
-        .eq('status', 'failed')
-        .not('error_message', 'ilike', '%pause%')
-        .not('error_message', 'ilike', '%132015%')
-        .range(from, from + PAGE_SIZE - 1);
+        .eq('status', 'failed');
+
+      if (targetCode === '131026') {
+        q = q.ilike('error_message', '%131026%');
+      } else if (targetCode === '131049') {
+        q = q.ilike('error_message', '%131049%');
+      } else {
+        q = q
+          .not('error_message', 'ilike', '%pause%')
+          .not('error_message', 'ilike', '%132015%');
+      }
+
+      const { data: rows, error: recErr } = await q.range(from, from + PAGE_SIZE - 1);
 
       if (recErr) {
         return NextResponse.json(
@@ -118,12 +135,19 @@ export async function POST(
       }
     }
 
+    const label =
+      targetCode === '131026'
+        ? 'undeliverable (131026)'
+        : targetCode === '131049'
+          ? 'ecosystem engagement (131049)'
+          : 'failed';
+
     const contactIdList = Array.from(targetContactIds);
     if (contactIdList.length === 0) {
       return NextResponse.json({
         success: true,
         count: 0,
-        message: 'No genuine failed contacts found to blacklist',
+        message: `No ${label} contacts found to blacklist`,
       });
     }
 
@@ -152,7 +176,7 @@ export async function POST(
       success: true,
       count: contactIdList.length,
       tag_id: tagId,
-      message: `Successfully blacklisted ${contactIdList.length} failed contacts`,
+      message: `Successfully blacklisted ${contactIdList.length} ${label} contacts`,
     });
   } catch (err) {
     return NextResponse.json(

@@ -237,12 +237,12 @@ export async function planBroadcastResume(
     return !cid || !blacklistedContactIds.has(cid);
   });
 
-  // Smart deduplication check for paused retries:
-  // Make sure those paused contacts didn't already receive a campaign with the same template!
+  // Smart deduplication check across all resume scopes:
+  // Make sure contacts didn't already receive this same template in another broadcast!
   let deduplicatedSendable = eligibleSendable;
   let deduplicatedCount = 0;
 
-  if (scope === 'paused' || scope === 'all') {
+  if (broadcast.template_name) {
     const { data: siblingBroadcasts } = await db
       .from('broadcasts')
       .select('id')

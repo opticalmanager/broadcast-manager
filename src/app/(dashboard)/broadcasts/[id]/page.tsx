@@ -45,6 +45,7 @@ import {
   ExternalLink,
   SlidersHorizontal,
   ShieldAlert,
+  Ban,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -171,7 +172,9 @@ export default function BroadcastDetailPage() {
     pending: number;
     paused: number;
     failed: number;
-  }>({ pending: 0, paused: 0, failed: 0 });
+    undeliverable: number;
+    ecosystem: number;
+  }>({ pending: 0, paused: 0, failed: 0, undeliverable: 0, ecosystem: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<RecipientStatus | 'all'>('all');
@@ -234,6 +237,8 @@ export default function BroadcastDetailPage() {
         { count: pendingCountExact },
         { count: totalFailedCount },
         { count: pauseErrorCount },
+        { count: undeliverableCountExact },
+        { count: ecosystemCountExact },
       ] = await Promise.all([
         supabase
           .from('broadcast_recipients')
@@ -256,6 +261,18 @@ export default function BroadcastDetailPage() {
           .eq('broadcast_id', broadcastId)
           .eq('status', 'failed')
           .or('error_message.ilike.%pause%,error_message.ilike.%132015%'),
+        supabase
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'failed')
+          .ilike('error_message', '%131026%'),
+        supabase
+          .from('broadcast_recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('broadcast_id', broadcastId)
+          .eq('status', 'failed')
+          .ilike('error_message', '%131049%'),
       ]);
 
       const truePaused =
@@ -270,6 +287,8 @@ export default function BroadcastDetailPage() {
         paused: truePaused,
         pending: truePending,
         failed: trueFailed,
+        undeliverable: undeliverableCountExact ?? 0,
+        ecosystem: ecosystemCountExact ?? 0,
       });
 
       // 2. Fetch rows for the table matching statusFilter, search, sort, and pagination
@@ -386,16 +405,26 @@ export default function BroadcastDetailPage() {
     }
   }
 
-  async function handleBlacklistFailed() {
-    if (counts.failed === 0) {
-      toast.info('No failed contacts to blacklist.');
+  async function handleBlacklist(targetCode: '131026' | '131049') {
+    const targetCount =
+      targetCode === '131026' ? counts.undeliverable : counts.ecosystem;
+
+    if (targetCount === 0) {
+      toast.info('No matching failed contacts found.');
       return;
     }
+
     setBlacklisting(true);
-    const toastId = toast.loading('Tagging failed contacts as blacklisted...');
+    const label =
+      targetCode === '131026'
+        ? 'undeliverable (131026)'
+        : 'ecosystem engagement (131049)';
+    const toastId = toast.loading(`Tagging ${label} contacts as blacklisted...`);
     try {
       const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/blacklist-failed`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetCode }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -403,7 +432,7 @@ export default function BroadcastDetailPage() {
       }
       toast.dismiss(toastId);
       toast.success(
-        data.message || `Successfully blacklisted ${data.count} failed contacts!`
+        data.message || `Successfully blacklisted ${data.count} contacts!`
       );
       await fetchData();
     } catch (err) {
@@ -754,17 +783,34 @@ export default function BroadcastDetailPage() {
               Action
               <ChevronDown className="h-3 w-3 ml-1" />
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="border-border bg-popover min-w-[240px]">
+            <DropdownMenuContent className="border-border bg-popover min-w-[280px]">
               <DropdownMenuItem
-                disabled={failedCount === 0}
-                onClick={handleBlacklistFailed}
+                disabled={counts.undeliverable === 0}
+                onClick={() => handleBlacklist('131026')}
                 className="cursor-pointer gap-2 py-2 text-red-400 focus:text-red-400 focus:bg-red-500/10"
               >
                 <ShieldAlert className="h-4 w-4 text-red-500 shrink-0" />
                 <div className="flex flex-col">
-                  <span className="font-medium text-xs">Blacklist Failed ({failedCount.toLocaleString()})</span>
+                  <span className="font-medium text-xs">
+                    Blacklist Undeliverable ({counts.undeliverable.toLocaleString()})
+                  </span>
                   <span className="text-[10px] text-muted-foreground">
-                    Tag failed contacts as &quot;blacklisted&quot; and exclude from all campaigns
+                    Code 131026: Permanent invalid/unregistered number. Exclude permanently.
+                  </span>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={counts.ecosystem === 0}
+                onClick={() => handleBlacklist('131049')}
+                className="cursor-pointer gap-2 py-2 text-amber-400 focus:text-amber-400 focus:bg-amber-500/10"
+              >
+                <Ban className="h-4 w-4 text-amber-500 shrink-0" />
+                <div className="flex flex-col">
+                  <span className="font-medium text-xs">
+                    Block Ecosystem Engagement ({counts.ecosystem.toLocaleString()})
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">
+                    Code 131049: Meta engagement limit. Exclude to stop retrying.
                   </span>
                 </div>
               </DropdownMenuItem>
