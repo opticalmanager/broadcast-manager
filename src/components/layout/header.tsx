@@ -47,32 +47,15 @@ interface HeaderProps {
   onOpenSidebar?: () => void;
 }
 
-export function Header({ onOpenSidebar }: HeaderProps) {
+function UserAccountMenu({ isMobile }: { isMobile: boolean }) {
   const t = useTranslations("Header");
-  const tSidebar = useTranslations("Sidebar");
-  const pathname = usePathname();
   const { profile, signOut } = useAuth();
-  const titleKey = getPageTitleKey(pathname);
-
-  // Fallback to Header translation first, then Sidebar translation if not in Header namespace
-  const translatedTitle = (() => {
-    try {
-      return t(titleKey as string);
-    } catch {
-      try {
-        return tSidebar(titleKey as string);
-      } catch {
-        return titleKey;
-      }
-    }
-  })();
-
   const initial =
     profile?.full_name?.charAt(0)?.toUpperCase() ??
     profile?.email?.charAt(0)?.toUpperCase() ??
     "U";
 
-  const renderProfileDropdown = (isMobile: boolean) => (
+  return (
     <DropdownMenu>
       <DropdownMenuTrigger
         className={cn(
@@ -145,16 +128,29 @@ export function Header({ onOpenSidebar }: HeaderProps) {
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+export function Header({ onOpenSidebar }: HeaderProps) {
+  const t = useTranslations("Header");
+  const pathname = usePathname();
+  const titleKey = getPageTitleKey(pathname);
+
+  let titleText = "Dashboard";
+  try {
+    titleText = t(titleKey as string);
+  } catch {
+    titleText = titleKey.charAt(0).toUpperCase() + titleKey.slice(1);
+  }
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 lg:px-6">
       {/* Left side: on mobile -> Profile avatar on the left + Page Title; on desktop -> Page Title */}
       <div className="flex min-w-0 items-center gap-2 sm:gap-3">
         <div className="lg:hidden">
-          {renderProfileDropdown(true)}
+          <UserAccountMenu isMobile={true} />
         </div>
         <h1 className="truncate text-base font-semibold text-foreground sm:text-lg">
-          {translatedTitle}
+          {titleText}
         </h1>
       </div>
 
@@ -164,7 +160,7 @@ export function Header({ onOpenSidebar }: HeaderProps) {
 
         {/* Desktop profile menu */}
         <div className="hidden lg:block">
-          {renderProfileDropdown(false)}
+          <UserAccountMenu isMobile={false} />
         </div>
 
         {/* Mobile Hamburger menu button on the RIGHT */}

@@ -251,7 +251,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
               <span className="truncate" title={account.name}>
                 {account.name}
               </span>
-              {accountRole ? (
+              {accountRole && ROLE_CHIP[accountRole] ? (
                 (() => {
                   const meta = ROLE_CHIP[accountRole];
                   const Icon = meta.icon;
