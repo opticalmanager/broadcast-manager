@@ -32,7 +32,7 @@ export function PwaRegister() {
           });
       };
 
-      if (document.readyState === 'complete') {
+      if (document.readyState === 'complete' || document.readyState === 'interactive') {
         registerSW();
       } else {
         window.addEventListener('load', registerSW);

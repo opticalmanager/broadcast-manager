@@ -235,70 +235,192 @@ export interface DispatchNotificationOptions {
 }
 
 /**
+ * Returns true if the current environment is an iOS device (iPhone / iPad / iPod).
+ */
+export function isIosDevice(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const isAppleMobile = /iPad|iPhone|iPod/.test(ua);
+  const isIpadOs = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  return isAppleMobile || isIpadOs;
+}
+
+/**
+ * Returns true if running as an installed PWA (Standalone mode).
+ */
+export function isStandalonePwa(): boolean {
+  if (typeof window === "undefined") return false;
+  const nav = typeof navigator !== "undefined" ? navigator : window.navigator;
+  const matchMediaMatches =
+    typeof window.matchMedia === "function"
+      ? Boolean(window.matchMedia("(display-mode: standalone)")?.matches)
+      : false;
+  return matchMediaMatches || Boolean((nav as unknown as { standalone?: boolean })?.standalone);
+}
+
+/**
+ * Ensures the service worker is registered and returns the registration
+ * within a safe timeout (prevents hanging indefinitely).
+ */
+export async function getActiveServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+    return null;
+  }
+  try {
+    // Check for an existing registration first
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing && existing.active) {
+      return existing;
+    }
+
+    // Register /sw.js if not already registered
+    const reg = await navigator.serviceWorker.register("/sw.js");
+
+    // Race with a 2-second timeout to prevent stalling
+    const readyPromise = navigator.serviceWorker.ready;
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => resolve(null), 2000)
+    );
+
+    const readyReg = await Promise.race([readyPromise, timeoutPromise]);
+    return readyReg || reg || null;
+  } catch (err) {
+    console.warn("[getActiveServiceWorker] Service worker retrieval/registration notice:", err);
+    return null;
+  }
+}
+
+/**
  * Dispatches a notification across desktop and mobile.
  * Uses ServiceWorkerRegistration.showNotification first (required for
- * Android Chrome and PWA standalone mode) and falls back to new Notification().
+ * Android Chrome, Samsung Internet, and iOS PWA standalone mode) and
+ * falls back to new Notification() for standard desktop browsers.
  */
 export async function dispatchSmartNotification(
   options: DispatchNotificationOptions
-): Promise<void> {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (window.Notification.permission !== "granted") return;
+): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
+  // Verify notification permission is granted
+  if (getNotificationPermission() !== "granted") return false;
 
   const iconUrl = options.icon || "/icons/icon-192x192.png";
 
-  // 1. Try Service Worker registration (critical for Android & PWA)
+  // 1. Service Worker showNotification (mandatory for Android & PWA)
   if ("serviceWorker" in navigator) {
     try {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && reg.showNotification) {
+      const reg = await getActiveServiceWorker();
+      if (reg && typeof reg.showNotification === "function") {
         await reg.showNotification(options.title, {
           body: options.body,
-          tag: options.tag,
+          tag: options.tag || "wacrm-notification",
           icon: iconUrl,
           badge: iconUrl,
-          data: { url: options.url },
+          data: { url: options.url || "/inbox" },
           vibrate: [200, 100, 200],
         } as NotificationOptions);
-        return;
+        return true;
       }
     } catch (swErr) {
-      console.warn("[dispatchSmartNotification] SW showNotification failed, trying fallback:", swErr);
+      console.warn("[dispatchSmartNotification] ServiceWorker showNotification notice:", swErr);
     }
   }
 
-  // 2. Standard Web Notification fallback
-  try {
-    const notification = new Notification(options.title, {
-      body: options.body,
-      tag: options.tag,
-      icon: iconUrl,
-    });
-    notification.onclick = () => {
-      window.focus();
-      if (options.onClick) {
-        options.onClick();
-      } else if (options.url) {
-        window.location.href = options.url;
-      }
-      notification.close();
-    };
-  } catch (err) {
-    console.error("[dispatchSmartNotification] Notification constructor failed:", err);
+  // 2. Standard Web Notification constructor fallback (Desktop Chrome, Firefox, Edge, Safari Desktop)
+  if (typeof window.Notification !== "undefined") {
+    try {
+      const notification = new window.Notification(options.title, {
+        body: options.body,
+        tag: options.tag || "wacrm-notification",
+        icon: iconUrl,
+      });
+
+      notification.onclick = () => {
+        window.focus();
+        if (options.onClick) {
+          options.onClick();
+        } else if (options.url) {
+          window.location.href = options.url;
+        }
+        notification.close();
+      };
+      return true;
+    } catch (err) {
+      // Mobile Chrome throws TypeError: Illegal constructor when new Notification() is used outside SW.
+      console.warn("[dispatchSmartNotification] Standard Notification constructor unsupported:", err);
+    }
   }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------
 // Browser-only helpers (SSR-guarded).
 // ---------------------------------------------------------------------
 
-export type BrowserNotifyPermission = NotificationPermission | "unsupported";
+export type BrowserNotifyPermission =
+  | NotificationPermission
+  | "unsupported"
+  | "ios-pwa-required";
 
 export function getNotificationPermission(): BrowserNotifyPermission {
-  if (typeof window === "undefined" || !("Notification" in window)) {
+  if (typeof window === "undefined") {
     return "unsupported";
   }
+
+  if (!("Notification" in window)) {
+    // On iOS Safari (iOS 16.4+), Push Notifications are supported only when added to Home Screen
+    if (isIosDevice() && !isStandalonePwa()) {
+      return "ios-pwa-required";
+    }
+    return "unsupported";
+  }
+
   return window.Notification.permission;
+}
+
+/**
+ * Request notification permission safely across all browsers (handling Promise & legacy callback).
+ * Automatically registers the Service Worker first so mobile notifications are ready.
+ */
+export async function requestBrowserNotificationPermission(): Promise<BrowserNotifyPermission> {
+  if (typeof window === "undefined") return "unsupported";
+
+  if (!("Notification" in window)) {
+    if (isIosDevice() && !isStandalonePwa()) {
+      return "ios-pwa-required";
+    }
+    return "unsupported";
+  }
+
+  // Ensure Service Worker is registered for mobile push capability
+  if ("serviceWorker" in navigator) {
+    try {
+      await navigator.serviceWorker.register("/sw.js");
+    } catch (swErr) {
+      console.warn("[requestBrowserNotificationPermission] SW pre-registration notice:", swErr);
+    }
+  }
+
+  try {
+    let permission: NotificationPermission;
+    // Standard modern Promise API
+    const req = window.Notification.requestPermission();
+    if (req && typeof req.then === "function") {
+      permission = await req;
+    } else {
+      // Legacy callback API
+      permission = await new Promise<NotificationPermission>((resolve) => {
+        window.Notification.requestPermission((perm) => resolve(perm));
+      });
+    }
+
+    writeBrowserNotifyPref(permission === "granted");
+    return permission;
+  } catch (err) {
+    console.error("[requestBrowserNotificationPermission] Request failed:", err);
+    return "denied";
+  }
 }
 
 /** Device-scoped opt-in. Defaults to off; a bad/absent value reads as off. */

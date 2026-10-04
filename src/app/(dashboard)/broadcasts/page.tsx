@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { Broadcast } from '@/types';
+import { Broadcast, BroadcastStatus } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -78,7 +78,25 @@ export default function BroadcastsPage() {
         .order('created_at', { ascending: false });
 
       if (fetchError) throw fetchError;
-      setBroadcasts(data ?? []);
+
+      const items = (data ?? []).map((b) => {
+        if (
+          b.status === 'sending' &&
+          b.total_recipients > 0 &&
+          (b.sent_count ?? 0) + (b.failed_count ?? 0) >= b.total_recipients
+        ) {
+          const resolvedStatus = (b.failed_count ?? 0) === b.total_recipients ? 'failed' : 'sent';
+          supabase
+            .from('broadcasts')
+            .update({ status: resolvedStatus, updated_at: new Date().toISOString() })
+            .eq('id', b.id)
+            .then(() => {});
+          return { ...b, status: resolvedStatus as BroadcastStatus };
+        }
+        return b;
+      });
+
+      setBroadcasts(items);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('errorLoad'));
     } finally {

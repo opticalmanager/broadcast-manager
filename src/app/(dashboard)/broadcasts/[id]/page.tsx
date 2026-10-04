@@ -283,6 +283,19 @@ export default function BroadcastDetailPage() {
       const trueFailed = Math.max(0, (totalFailedCount ?? 0) - (pauseErrorCount ?? 0));
       const truePending = bc.status === 'paused' ? 0 : (pendingCountExact ?? 0);
 
+      // Self-heal: If broadcast is marked 'sending' but 0 recipients remain pending,
+      // it completed! Update local state and reconcile DB row.
+      if (bc.status === 'sending' && (pendingCountExact ?? 0) === 0) {
+        const isAllFailed = (totalFailedCount ?? 0) === (bc.total_recipients ?? 0) && (totalFailedCount ?? 0) > 0;
+        const resolvedStatus = (pausedStatusCount ?? 0) > 0 ? 'paused' : (isAllFailed ? 'failed' : 'sent');
+        bc.status = resolvedStatus;
+        supabase
+          .from('broadcasts')
+          .update({ status: resolvedStatus, updated_at: new Date().toISOString() })
+          .eq('id', broadcastId)
+          .then(() => {});
+      }
+
       setCounts({
         paused: truePaused,
         pending: truePending,

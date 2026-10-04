@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   getNotificationPermission,
+  requestBrowserNotificationPermission,
   writeBrowserNotifyPref,
   isSmartNotificationPromptSnoozed,
   snoozeSmartNotificationPrompt,
@@ -17,7 +18,7 @@ export function SmartNotificationPrompt() {
 
   useEffect(() => {
     // Only prompt if permission is 'default' (unasked) and not snoozed
-    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (typeof window === "undefined") return;
     if (getNotificationPermission() !== "default") return;
     if (isSmartNotificationPromptSnoozed()) return;
 
@@ -37,10 +38,9 @@ export function SmartNotificationPrompt() {
   }, []);
 
   const handleEnable = useCallback(async () => {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
     setRequesting(true);
     try {
-      const permission = await Notification.requestPermission();
+      const permission = await requestBrowserNotificationPermission();
       if (permission === "granted") {
         writeBrowserNotifyPref(true);
         toast.success("Notifications enabled!", {

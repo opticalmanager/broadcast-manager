@@ -428,7 +428,6 @@ export async function deliverBroadcast(
         .from('broadcasts')
         .update({
           status: 'paused',
-          paused_count: exactPaused ?? 0,
           updated_at: new Date().toISOString(),
         })
         .eq('id', plan.broadcastId);
@@ -489,12 +488,15 @@ export async function finalizeBroadcastStatus(
     finalStatus = 'failed';
   }
 
-  await db
+  const { error } = await db
     .from('broadcasts')
     .update({
       status: finalStatus,
-      paused_count: paused,
       updated_at: new Date().toISOString(),
     })
     .eq('id', broadcastId);
+
+  if (error) {
+    console.error(`[finalizeBroadcastStatus] failed to update status to ${finalStatus}:`, error);
+  }
 }

@@ -312,6 +312,57 @@ describe("browser-only helpers without a window", () => {
 
   it("report unsupported when window lacks Notification", () => {
     vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
     expect(getNotificationPermission()).toBe("unsupported");
   });
+
+  it("detects ios-pwa-required when running on iPhone Safari outside standalone PWA", () => {
+    vi.stubGlobal("window", {
+      matchMedia: () => ({ matches: false }),
+    });
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+    });
+    expect(getNotificationPermission()).toBe("ios-pwa-required");
+  });
+
+  it("dispatches notification via serviceWorker showNotification when available", async () => {
+    const showNotificationMock = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", {
+      Notification: {
+        permission: "granted",
+      },
+    });
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36",
+      serviceWorker: {
+        getRegistration: vi.fn().mockResolvedValue({
+          active: true,
+          showNotification: showNotificationMock,
+        }),
+        ready: Promise.resolve({
+          showNotification: showNotificationMock,
+        }),
+      },
+    });
+
+    const { dispatchSmartNotification } = await import("./browser-notify");
+    const result = await dispatchSmartNotification({
+      title: "New Customer Message",
+      body: "Hello from phone",
+      url: "/inbox?c=123",
+    });
+
+    expect(result).toBe(true);
+    expect(showNotificationMock).toHaveBeenCalledWith(
+      "New Customer Message",
+      expect.objectContaining({
+        body: "Hello from phone",
+        data: { url: "/inbox?c=123" },
+      })
+    );
+  });
 });
+

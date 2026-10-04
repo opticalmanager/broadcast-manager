@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useSyncExternalStore } from 'react';
-import { Bell, BellRing, CircleAlert, Loader2 } from 'lucide-react';
+import { Bell, BellRing, CircleAlert, Loader2, Smartphone } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
 
@@ -17,7 +17,9 @@ import { Switch } from '@/components/ui/switch';
 import { useBrowserNotifyPref } from '@/hooks/use-browser-notifications';
 import {
   BROWSER_NOTIFY_CHANGE_EVENT,
+  dispatchSmartNotification,
   getNotificationPermission,
+  requestBrowserNotificationPermission,
   writeBrowserNotifyPref,
   type BrowserNotifyPermission,
 } from '@/lib/notifications/browser-notify';
@@ -41,9 +43,9 @@ const serverPermission = (): BrowserNotifyPermission => 'unsupported';
 
 /**
  * "Browser notifications" card — device-scoped opt-in for desktop
- * alerts about new customer messages (issue #516). Persistence is
- * localStorage; the browser's own permission grant is the real gate,
- * so the switch reads as off whenever that grant is missing.
+ * and mobile alerts about new customer messages and broadcast updates.
+ * Persistence is localStorage; the browser's own permission grant is the
+ * real gate, so the switch reads as off whenever that grant is missing.
  */
 export function BrowserNotificationsCard({ className }: { className?: string }) {
   const t = useTranslations('Settings.browserNotifications');
@@ -54,8 +56,10 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
     serverPermission,
   );
   const [requesting, setRequesting] = useState(false);
+  const [sendingTest, setSendingTest] = useState(false);
 
   const supported = permission !== 'unsupported';
+  const isIosPwaRequired = permission === 'ios-pwa-required';
   const checked = enabled && permission === 'granted';
 
   const onToggle = async (next: boolean) => {
@@ -73,10 +77,10 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
     }
     setRequesting(true);
     try {
-      const result = await Notification.requestPermission();
-      // Also dispatches the change event, which refreshes `permission`.
-      writeBrowserNotifyPref(result === 'granted');
-      if (result === 'denied') {
+      const result = await requestBrowserNotificationPermission();
+      if (result === 'granted') {
+        toast.success(t('statusGranted'));
+      } else if (result === 'denied') {
         toast.error(t('permissionDeniedToast'), { description: t('deniedHint') });
       }
     } finally {
@@ -84,15 +88,25 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
     }
   };
 
-  const sendTest = () => {
+  const sendTest = async () => {
+    setSendingTest(true);
     try {
-      new Notification(t('testTitle'), {
+      const sent = await dispatchSmartNotification({
+        title: t('testTitle'),
         body: t('testBody'),
-        icon: '/icon',
         tag: 'wacrm-test-notification',
+        url: '/inbox',
       });
-    } catch {
+      if (sent) {
+        toast.success(t('testSentSuccess'));
+      } else {
+        toast.error(t('unsupported'));
+      }
+    } catch (err) {
+      console.error('[sendTest] Error dispatching test notification:', err);
       toast.error(t('unsupported'));
+    } finally {
+      setSendingTest(false);
     }
   };
 
@@ -113,7 +127,17 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
         <CardDescription>{t('description')}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!supported ? (
+        {isIosPwaRequired ? (
+          <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground">
+            <Smartphone className="mt-0.5 size-5 shrink-0 text-primary" />
+            <div className="space-y-1">
+              <p className="font-semibold text-foreground">{t('iosPwaTitle')}</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('iosPwaDesc')}
+              </p>
+            </div>
+          </div>
+        ) : !supported ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <CircleAlert className="size-4 shrink-0" />
             {t('unsupported')}
@@ -153,10 +177,14 @@ export function BrowserNotificationsCard({ className }: { className?: string }) 
               type="button"
               variant="outline"
               size="sm"
-              onClick={sendTest}
-              disabled={!checked}
+              onClick={() => void sendTest()}
+              disabled={!checked || sendingTest}
             >
-              <BellRing className="size-4" />
+              {sendingTest ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <BellRing className="size-4" />
+              )}
               {t('sendTest')}
             </Button>
           </>
