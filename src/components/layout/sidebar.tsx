@@ -206,7 +206,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
           "transition-transform duration-200 ease-out will-change-transform",
           open ? "translate-x-0" : "translate-x-full",
           // Desktop: static, pinned on the left
-          "lg:static lg:z-0 lg:w-60 lg:border-r lg:border-l-0 lg:translate-x-0 lg:transition-none"
+          "lg:static lg:inset-auto lg:left-0 lg:right-auto lg:z-0 lg:w-60 lg:max-w-none lg:shrink-0 lg:border-r lg:border-l-0 lg:translate-x-0 lg:transition-none"
         )}
         aria-label={t("primaryNav")}
       >

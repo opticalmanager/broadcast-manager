@@ -31,11 +31,15 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loading && !user) {
-      router.push("/login");
+      if (typeof window !== "undefined") {
+        window.location.replace("/login");
+      } else {
+        router.push("/login");
+      }
     }
   }, [user, loading, router]);
 
-  if (loading) {
+  if (loading || !user) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
@@ -45,8 +49,6 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-
-  if (!user) return null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -58,12 +60,12 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
       {/* Contextual prompt inviting user to enable notifications if not on */}
       <SmartNotificationPrompt />
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
-      <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
         <Header onOpenSidebar={() => setSidebarOpen(true)} />
         {/* Dynamic bottom padding on mobile when bottom nav is present */}
         <main
           className={cn(
-            "flex-1 overflow-y-auto p-4 sm:p-6",
+            "flex-1 min-w-0 min-h-0 overflow-y-auto p-4 sm:p-6",
             isBottomNavHidden ? "pb-4 lg:pb-6" : "pb-20 lg:pb-6"
           )}
         >

@@ -579,7 +579,7 @@ function InboxPageInner() {
 
   return (
     <div className={cn(
-      "-m-4 flex flex-col overflow-hidden sm:-m-6",
+      "-m-4 flex min-w-0 min-h-0 flex-col overflow-hidden sm:-m-6",
       hasActiveConv
         ? "h-[calc(100dvh-3.5rem)] sm:h-[calc(100vh-3.5rem)] max-h-[100dvh]"
         : "h-[calc(100dvh-7rem)] sm:h-[calc(100vh-3.5rem)]"

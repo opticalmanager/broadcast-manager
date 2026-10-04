@@ -115,19 +115,26 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Listen to OS system color scheme changes when no manual override is saved
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    function onMediaChange(e: MediaQueryListEvent) {
-      try {
-        const stored = localStorage.getItem(MODE_STORAGE_KEY);
-        if (!isMode(stored)) {
-          const next: Mode = e.matches ? "dark" : "light";
-          setModeState(next);
-          document.documentElement.dataset.mode = next;
-        }
-      } catch {}
-    }
-    mediaQuery.addEventListener("change", onMediaChange);
-    return () => mediaQuery.removeEventListener("change", onMediaChange);
+    try {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      function onMediaChange(e: MediaQueryListEvent | MediaQueryList) {
+        try {
+          const stored = localStorage.getItem(MODE_STORAGE_KEY);
+          if (!isMode(stored)) {
+            const next: Mode = e.matches ? "dark" : "light";
+            setModeState(next);
+            document.documentElement.dataset.mode = next;
+          }
+        } catch {}
+      }
+      if (typeof mediaQuery.addEventListener === "function") {
+        mediaQuery.addEventListener("change", onMediaChange);
+        return () => mediaQuery.removeEventListener("change", onMediaChange);
+      } else if (typeof (mediaQuery as any).addListener === "function") {
+        (mediaQuery as any).addListener(onMediaChange);
+        return () => (mediaQuery as any).removeListener(onMediaChange);
+      }
+    } catch {}
   }, []);
 
   // Sync from other tabs — change theme or mode in tab A, tab B
