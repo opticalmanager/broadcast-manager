@@ -17,6 +17,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useMobileNav } from "@/contexts/mobile-nav-context";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -569,11 +570,19 @@ function InboxPageInner() {
   // it back to the list. On lg+ both panes render side-by-side as
   // before, unchanged.
   const hasActiveConv = !!activeConversation;
+  const { setBottomNavHidden } = useMobileNav();
+
+  useEffect(() => {
+    setBottomNavHidden(hasActiveConv);
+    return () => setBottomNavHidden(false);
+  }, [hasActiveConv, setBottomNavHidden]);
 
   return (
     <div className={cn(
-      "-m-4 flex h-[calc(100dvh-3.5rem)] sm:h-[calc(100vh-3.5rem)] flex-col overflow-hidden sm:-m-6",
-      hasActiveConv && "max-h-[100dvh]"
+      "-m-4 flex flex-col overflow-hidden sm:-m-6",
+      hasActiveConv
+        ? "h-[calc(100dvh-3.5rem)] sm:h-[calc(100vh-3.5rem)] max-h-[100dvh]"
+        : "h-[calc(100dvh-7rem)] sm:h-[calc(100vh-3.5rem)]"
     )}>
       {/* WhatsApp connection banner — in the flex column, not absolute,
           so it pushes the panels down instead of overlapping them. */}
