@@ -70,6 +70,9 @@ function readInitialMode(): Mode {
   try {
     const stored = localStorage.getItem(MODE_STORAGE_KEY);
     if (isMode(stored)) return stored;
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      return "dark";
+    }
   } catch {
     // localStorage can throw in private-browsing / sandboxed contexts.
   }
@@ -108,6 +111,24 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const toggleMode = useCallback(() => {
     setMode(mode === "dark" ? "light" : "dark");
   }, [mode, setMode]);
+
+  // Listen to OS system color scheme changes when no manual override is saved
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    function onMediaChange(e: MediaQueryListEvent) {
+      try {
+        const stored = localStorage.getItem(MODE_STORAGE_KEY);
+        if (!isMode(stored)) {
+          const next: Mode = e.matches ? "dark" : "light";
+          setModeState(next);
+          document.documentElement.dataset.mode = next;
+        }
+      } catch {}
+    }
+    mediaQuery.addEventListener("change", onMediaChange);
+    return () => mediaQuery.removeEventListener("change", onMediaChange);
+  }, []);
 
   // Sync from other tabs — change theme or mode in tab A, tab B
   // catches up without a refresh.
