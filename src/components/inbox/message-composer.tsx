@@ -22,6 +22,7 @@ import {
   Plus,
   MessageSquareDashed,
   Zap,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GatedButton } from "@/components/ui/gated-button";
@@ -547,18 +548,20 @@ export function MessageComposer({
         </div>
       )}
       {sessionExpired && (
-        <div className="mb-2 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2">
-          <p className="text-xs text-amber-400">
-            {t("sessionExpiredHint")}
-          </p>
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 shadow-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <Clock className="h-4 w-4 shrink-0 text-amber-400" />
+            <p className="text-xs font-medium text-amber-400 truncate sm:whitespace-normal">
+              {t("sessionExpiredHint")}
+            </p>
+          </div>
           <Button
-            variant="ghost"
             size="sm"
-            className="h-7 text-xs text-amber-400 hover:text-amber-300"
+            className="h-7.5 shrink-0 bg-amber-500 font-semibold text-slate-950 hover:bg-amber-400 text-xs px-3 shadow-sm"
             onClick={onOpenTemplates}
           >
-            <LayoutTemplate className="mr-1 h-3 w-3" />
-            {t("templates")}
+            <LayoutTemplate className="mr-1.5 h-3.5 w-3.5" />
+            {t("sendTemplate")}
           </Button>
         </div>
       )}
@@ -743,39 +746,68 @@ export function MessageComposer({
             )}
           </GatedButton>
 
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              readOnly
-                ? t("readOnlyPlaceholder")
-                : sessionExpired
-                  ? t("sessionExpiredPlaceholder")
-                  : t("typeMessagePlaceholder")
-            }
-            disabled={sessionExpired || readOnly}
-            rows={1}
-            // Textarea keeps its own inline title — the GatedButton
-            // wrapping pattern doesn't apply to non-button inputs.
-            // The placeholder text also surfaces the read-only state.
-            title={readOnly ? t("readOnlyTitle") : undefined}
-            className={cn(
-              "flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
-              (sessionExpired || readOnly) && "cursor-not-allowed opacity-50"
-            )}
-          />
+          <div
+            className="flex-1 relative"
+            onClick={() => {
+              if (sessionExpired && onOpenTemplates) {
+                onOpenTemplates();
+              }
+            }}
+          >
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                readOnly
+                  ? t("readOnlyPlaceholder")
+                  : sessionExpired
+                    ? t("sessionExpiredPlaceholder")
+                    : t("typeMessagePlaceholder")
+              }
+              disabled={sessionExpired || readOnly}
+              rows={1}
+              title={
+                readOnly
+                  ? t("readOnlyTitle")
+                  : sessionExpired
+                    ? t("sessionExpiredHint")
+                    : undefined
+              }
+              className={cn(
+                "w-full resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
+                sessionExpired && "cursor-pointer hover:border-amber-500/50",
+                readOnly && "cursor-not-allowed opacity-50"
+              )}
+            />
+          </div>
 
           <GatedButton
             size="sm"
             canAct={!readOnly}
             gateReason="send messages"
-            disabled={!text.trim() || sessionExpired || sending}
-            onClick={handleSend}
-            className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
+            disabled={(!text.trim() && !sessionExpired) || sending}
+            onClick={() => {
+              if (sessionExpired) {
+                onOpenTemplates?.();
+              } else {
+                handleSend();
+              }
+            }}
+            title={sessionExpired ? t("sendTemplate") : t("send")}
+            className={cn(
+              "h-9 w-9 shrink-0 p-0 shadow-sm",
+              sessionExpired
+                ? "bg-amber-500 hover:bg-amber-400 text-slate-950"
+                : "bg-primary hover:bg-primary/90 disabled:opacity-40"
+            )}
           >
-            <Send className="h-4 w-4" />
+            {sessionExpired ? (
+              <LayoutTemplate className="h-4 w-4" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </GatedButton>
         </div>
       )}
