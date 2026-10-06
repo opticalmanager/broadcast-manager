@@ -1,23 +1,20 @@
 <div align="center">
 
-  <img src="https://raw.githubusercontent.com/ArnasDon/wacrm/main/public/icon.png" alt="wacrm logo" width="80" height="80" style="border-radius: 18px; margin-bottom: 12px;" onerror="this.style.display='none'" />
-
-  # wacrm — The Self-Hostable WhatsApp® CRM
+  # Broadcast Manager
 
   <p align="center">
-    <strong>Production-grade, privacy-first customer relationship management built directly on the official Meta WhatsApp Cloud API.</strong>
+    <strong>Enterprise WhatsApp® Marketing, Multi-Agent Shared Inbox, Sales CRM &amp; Visual Automation Platform</strong>
   </p>
 
   <p align="center">
-    Shared Team Inbox &bull; Visual Automations &bull; Broadcast Campaigns &bull; Kanban Sales Pipelines &bull; AI Agent & RAG &bull; Native PWA Mobile Experience
+    Built directly on the official Meta WhatsApp Business Cloud API &bull; 100% Data Sovereignty &bull; Zero Per-Seat SaaS Fees
   </p>
 
   <p align="center">
-    <a href="https://github.com/ArnasDon/wacrm/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-100%25%20Passing-emerald?style=for-the-badge&logo=githubactions&logoColor=white" alt="CI Status" /></a>
     <a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js%2016-Turbopack-black?style=for-the-badge&logo=nextdotjs&logoColor=white" alt="Next.js 16" /></a>
     <a href="https://react.dev"><img src="https://img.shields.io/badge/React%2019-Ready-61dafb?style=for-the-badge&logo=react&logoColor=black" alt="React 19" /></a>
     <a href="https://supabase.com"><img src="https://img.shields.io/badge/Supabase-Postgres%20%2B%20RLS-3ecf8e?style=for-the-badge&logo=supabase&logoColor=white" alt="Supabase" /></a>
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT License" /></a>
+    <a href="https://developers.facebook.com/docs/whatsapp/cloud-api"><img src="https://img.shields.io/badge/Meta-WhatsApp%20Cloud%20API-25D366?style=for-the-badge&logo=whatsapp&logoColor=white" alt="Meta WhatsApp Cloud API" /></a>
     <a href="https://vitest.dev"><img src="https://img.shields.io/badge/Tests-1%2C063%20Passed-25c2a0?style=for-the-badge&logo=vitest&logoColor=white" alt="Vitest Tests" /></a>
   </p>
 
@@ -25,16 +22,12 @@
     <a href="#-key-features">Features</a> &bull;
     <a href="#-system-architecture">Architecture</a> &bull;
     <a href="#-quick-start">Quick Start</a> &bull;
-    <a href="#-deploy-on-hostinger-recommended">Deploy</a> &bull;
     <a href="#-docker-deployment">Docker</a> &bull;
+    <a href="#-production-deployment">Production</a> &bull;
     <a href="#-public-api--mcp-server">API & MCP</a> &bull;
     <a href="#-environment-variables">Configuration</a> &bull;
     <a href="#-meta-whatsapp-setup">WhatsApp Setup</a>
   </p>
-
-  <a href="https://www.hostinger.com/web-apps-hosting?REFERRALCODE=WACRMHOST">
-    <img src="./.github/assets/hostinger-deploy.png" alt="Deploy wacrm in one click on Hostinger" width="900" style="border-radius: 12px; margin: 16px 0;" />
-  </a>
 
 </div>
 
@@ -42,15 +35,15 @@
 
 ## 🌟 Executive Overview
 
-**wacrm** is an open-source, full-featured WhatsApp CRM engineered for businesses that need to scale customer communication without paying per-seat software fees. Built on the **official Meta WhatsApp Business Cloud API**, it transforms a single WhatsApp Business number into a collaborative multi-agent workspace with real-time synchronization, enterprise-grade data security, and zero vendor lock-in.
+**Broadcast Manager** is a production-grade, self-hostable WhatsApp CRM and broadcast marketing platform engineered for businesses to scale customer engagement without paying costly per-seat SaaS subscription fees. Built directly on the **official Meta WhatsApp Business Cloud API**, it transforms your WhatsApp Business phone number into an organized, high-performance customer operations center with real-time multi-agent sync, automated drip campaigns, and bank-grade data security.
 
-### Why Choose wacrm?
+### Why Choose Broadcast Manager?
 
-- **100% Data Sovereignty**: All customer conversations, media attachments, contact profiles, and automation logs reside in your own Supabase PostgreSQL database.
-- **Zero Per-Seat Fees**: Scale your sales and customer support teams from 1 to 100+ agents without incremental SaaS licensing costs.
-- **Official Meta Cloud API**: Reliable, direct connectivity with Meta Graph API — no fragile web-scraping or third-party proxy gateways that risk phone number bans.
-- **Modern Developer Experience**: Next.js 16 App Router, React 19, Tailwind CSS v4, TypeScript strict typing, and comprehensive automated test coverage (1,060+ tests).
-- **Extensible & AI-Native**: Native Model Context Protocol (MCP) server support, Bring-Your-Own-Key (BYOK) AI copilots, hybrid semantic search, and scoped REST APIs.
+- **100% Data Sovereignty**: All customer conversations, media attachments, contact profiles, and automation logs reside securely in your own Supabase PostgreSQL database with Row-Level Security (RLS).
+- **Zero Per-Seat Fees**: Scale your customer support and sales teams from 1 to 100+ agents without incremental licensing costs.
+- **Official Meta Cloud API**: Direct, high-throughput connectivity with the Meta Graph API — no fragile unofficial scrapers or reverse-engineered QR gateways that risk phone number suspensions.
+- **Modern Architecture**: Next.js 16 App Router, React 19, Tailwind CSS v4, TypeScript strict mode, and full automated test suite coverage (1,063+ tests).
+- **AI-Native & Extensible**: Native Model Context Protocol (MCP) server support, Bring-Your-Own-Key (BYOK) AI assistants, hybrid semantic search (pgvector), and scoped REST APIs.
 
 ---
 
@@ -58,7 +51,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                                   WACRM CORE PLATFORM                                  │
+│                              BROADCAST MANAGER PLATFORM                                │
 ├─────────────────────┬─────────────────────┬────────────────────┬───────────────────────┤
 │ 💬 Shared Team      │ 📢 Broadcast        │ ⚡ Visual Flow     │ 🤖 AI Copilot         │
 │    Inbox            │    Campaigns        │    Automations     │    & Hybrid RAG       │
@@ -82,17 +75,17 @@
 
 Transform your official WhatsApp Business number into an omnichannel customer collaboration hub.
 
-- **Instant Real-Time WebSocket Sync**: Conversations, read receipts, and inbound messages synchronize instantaneously across all agent browsers using Supabase Realtime WebSocket channels.
-- **24-Hour Customer Care Window Intelligence**: WhatsApp enforces a 24-hour messaging window for non-template responses. wacrm displays an active countdown timer for each conversation and provides a **1-tap template re-engagement modal** when the window expires to seamlessly reopen communication.
-- **Full Media Engine**: Send and receive high-resolution photos, documents (PDF/DOCX), voice recordings, and video files with automatic caching in Supabase Storage (`chat-media` bucket).
-- **Collaboration & Triage**: Assign threads to teammates, toggle conversation statuses (`Open`, `Pending`, `Closed`), and maintain internal team notes that customers never see.
-- **WhatsApp Native Experience**: Embedded WhatsApp doodle canvas (`inbox-doodle.svg`) and message formatting for a familiar, friction-free workflow.
+- **Instant Real-Time WebSocket Sync**: Conversations, delivery receipts, and inbound messages synchronize instantaneously across all agent browsers using Supabase Realtime WebSocket channels.
+- **24-Hour Customer Care Window Intelligence**: WhatsApp enforces a 24-hour customer messaging window for free-form responses. Broadcast Manager displays a live countdown timer on active chats and provides a **1-tap template re-engagement picker** when the window expires to seamlessly reopen communication.
+- **Full Rich Media Support**: Send and receive photos, documents (PDF/DOCX), voice audio notes, and video files with automatic mirroring in Supabase Storage (`chat-media` bucket).
+- **Collaboration & Triage**: Assign threads to teammates, toggle conversation lifecycle states (`Open`, `Pending`, `Closed`), and maintain internal team notes that customers never see.
+- **WhatsApp Native Experience**: Authentic WhatsApp doodle canvas (`inbox-doodle.svg`) and message formatting for a familiar, friction-free workflow.
 
 ---
 
 ### 2. 📱 Native Mobile & PWA Experience
 
-Engineered specifically for mobile agents on the move with a full Progressive Web App (PWA) architecture.
+Engineered specifically for mobile agents on the go with a progressive web app architecture.
 
 - **WhatsApp-Inspired Navigation**: 4-tab mobile bottom bar (`Dashboard`, `Inbox`, `Broadcasts`, `Contacts`) with dynamic unread badges, active tab highlighting, and auto-hiding during active chat threads.
 - **Native-Feel Conversation Feed**: Circular contact avatars with live conversation status dots (`green` for open, `amber` for pending, `slate` for closed), formatted timestamps (`10:45 AM`, `Yesterday`, `Mon`, `12/04/26`), rich media previews, and horizontal filter chips.
@@ -190,10 +183,10 @@ Extend your CRM into your existing tech stack or control it via AI coding assist
   - Idempotent endpoints, structured JSON envelopes, and robust rate limiting.
   - Read full documentation in [`docs/public-api.md`](./docs/public-api.md).
 - **Model Context Protocol (MCP) Server**:
-  - Drive your CRM directly from **Claude Desktop**, **Cursor**, **Windsurf**, or autonomous agent scripts using natural language:
+  - Drive Broadcast Manager directly from **Claude Desktop**, **Cursor**, **Windsurf**, or autonomous agent scripts using natural language:
     > *"Find all open conversations from today and summarize customer inquiries."*
     > *"Send the onboarding template to +1 555 0199."*
-  - Published on npm as [`wacrm-mcp`](https://www.npmjs.com/package/wacrm-mcp). Read [`docs/mcp.md`](./docs/mcp.md).
+  - Read [`docs/mcp.md`](./docs/mcp.md).
 - **Outbound Webhooks**: Real-time event dispatching for integration with Zapier, Make.com, n8n, or internal webhooks.
 
 ---
@@ -275,22 +268,22 @@ flowchart TD
 ### 1. Prerequisites
 - **Node.js**: `v20.0.0` or higher
 - **npm**: `v10.0.0` or higher
-- A free **[Supabase](https://supabase.com)** account
-- A **[Meta for Developers](https://developers.facebook.com)** account
+- A free **[Supabase](https://supabase.com)** project
+- A **[Meta for Developers](https://developers.facebook.com)** business account
 
 ### 2. Clone and Install
 ```bash
-git clone https://github.com/ArnasDon/wacrm.git
-cd wacrm
+git clone <your-repository-url>
+cd broadcast-manager
 npm install
 ```
 
-### 3. Environment Setup
-Copy the sample environment file:
+### 3. Environment Configuration
+Create your local environment file:
 ```bash
 cp .env.local.example .env.local
 ```
-Fill in your Supabase credentials in `.env.local`:
+Configure your Supabase and encryption variables in `.env.local`:
 ```env
 NEXT_PUBLIC_SUPABASE_URL="https://your-project.supabase.co"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="your-anon-key"
@@ -300,13 +293,13 @@ NEXT_PUBLIC_SITE_URL="http://localhost:3000"
 NEXT_PUBLIC_APP_LOCALE="en"
 ```
 
-> **Tip:** You can generate a secure 32-byte encryption key with Node.js:
+> **Tip:** Generate a secure 32-byte encryption key using Node.js:
 > ```bash
 > node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 > ```
 
 ### 4. Apply Database Migrations
-Apply all schema tables, triggers, and RLS policies using the included runner:
+Run the included database migration script to set up all tables, triggers, and RLS policies:
 ```bash
 # Using direct Postgres connection string:
 node scripts/apply-migrations.mjs "postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres"
@@ -315,31 +308,11 @@ node scripts/apply-migrations.mjs "postgresql://postgres:[PASSWORD]@db.[REF].sup
 node scripts/apply-migrations.mjs --password "YOUR_DB_PASSWORD"
 ```
 
-### 5. Launch the Development Server
+### 5. Start Development Server
 ```bash
 npm run dev
 ```
-Open **[http://localhost:3000](http://localhost:3000)** in your browser. Register your initial account and you're ready to go!
-
----
-
-## 🚀 Deploy on Hostinger (Recommended)
-
-<div align="center">
-  <a href="https://www.hostinger.com/web-apps-hosting?REFERRALCODE=WACRMHOST">
-    <img src="./.github/assets/hostinger-deploy.png" alt="Deploy to Hostinger" width="900" style="border-radius: 12px;" />
-  </a>
-</div>
-
-**wacrm is tested and officially optimized for [Hostinger Managed Node.js Hosting](https://www.hostinger.com/web-apps-hosting?REFERRALCODE=WACRMHOST).** It offers the fastest zero-ops deployment route with automatic SSL, built-in LiteSpeed edge caching, and automated Git deployments.
-
-### 4 Simple Steps to Deploy:
-1. **Fork this repository** to your personal GitHub account.
-2. Log in to **Hostinger hPanel → Websites → Create Website**, select **Node.js Application**, and connect your forked GitHub repository.
-3. Add your environment variables (`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ENCRYPTION_KEY`, etc.) in the **Environment Variables** section of hPanel.
-4. Click **Deploy**. Hostinger automatically builds the Next.js production bundle and provisions free SSL on your custom domain.
-
-👉 Detailed visual walkthrough: **[wacrm.tech/docs/deployment-hostinger](https://wacrm.tech/docs/deployment-hostinger)**.
+Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ---
 
@@ -350,11 +323,11 @@ The repository includes a production-ready, multi-stage `Dockerfile` and `docker
 ### Using Docker Compose
 
 1. Configure `.env.local` with your production variables.
-2. Build and start the container:
+2. Build and launch:
    ```bash
    docker compose --env-file .env.local up --build -d
    ```
-3. Access your instance at **`http://localhost:3000`** (or custom `HOST_PORT`).
+3. Access Broadcast Manager at **`http://localhost:3000`** (or custom `HOST_PORT`).
 
 ### Plain Docker
 ```bash
@@ -362,16 +335,53 @@ docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key \
   --build-arg NEXT_PUBLIC_APP_LOCALE=en \
-  -t wacrm .
+  -t broadcast-manager .
 
 docker run -d \
   --env-file .env.local \
   -e PORT=3000 \
   -p 3000:3000 \
-  wacrm
+  broadcast-manager
 ```
 
-For complete containerization guidelines, see [`docs/docker.md`](./docs/docker.md).
+For complete containerization details, see [`docs/docker.md`](./docs/docker.md).
+
+---
+
+## 🚀 Production Deployment
+
+Broadcast Manager is a standard Next.js application that can be deployed on any modern Linux server, VPS (Ubuntu/Debian), or cloud platform.
+
+### Deploying on a Cloud VPS / Dedicated Server
+
+1. **Server Setup**: Install Node.js 20+ and PM2:
+   ```bash
+   sudo apt update && sudo apt install -y nodejs npm
+   npm install -g pm2
+   ```
+
+2. **Clone & Build**:
+   ```bash
+   git clone <your-repository-url> /var/www/broadcast-manager
+   cd /var/www/broadcast-manager
+   npm ci
+   cp .env.local.example .env.local  # Populate your production variables
+   npm run build
+   ```
+
+3. **Start Process with PM2**:
+   ```bash
+   pm2 start npm --name "broadcast-manager" -- start
+   pm2 save
+   pm2 startup
+   ```
+
+4. **Nginx Reverse Proxy & SSL**:
+   Set up Nginx to proxy port 3000 to your domain and issue a free SSL certificate with Certbot:
+   ```bash
+   sudo apt install -y certbot python3-certbot-nginx
+   sudo certbot --nginx -d crm.yourdomain.com
+   ```
 
 ---
 
@@ -394,7 +404,7 @@ For complete containerization guidelines, see [`docs/docker.md`](./docs/docker.m
 
 ## 📱 Meta WhatsApp Cloud API Setup
 
-Connecting your WhatsApp number to wacrm takes under 5 minutes:
+Connecting your WhatsApp number takes under 5 minutes:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -404,9 +414,9 @@ Connecting your WhatsApp number to wacrm takes under 5 minutes:
   2. Add Product             ──> WhatsApp
   3. API Setup               ──> Copy Phone Number ID & WABA ID
   4. System User Token       ──> Generate permanent token with whatsapp_business_messaging
-  5. wacrm Settings          ──> Settings -> WhatsApp -> Paste IDs & Save
+  5. Broadcast Manager       ──> Settings -> WhatsApp -> Paste IDs & Save
   6. Webhooks                ──> Callback URL: https://your-domain.com/api/whatsapp/webhook
-                             ──> Verify Token: paste from wacrm settings
+                             ──> Verify Token: paste from Broadcast Manager settings
                              ──> Subscriptions: check 'messages'
 ```
 
@@ -416,14 +426,14 @@ Connecting your WhatsApp number to wacrm takes under 5 minutes:
    - In Meta Business Suite, navigate to **Business Settings → System Users**.
    - Create a System User (Admin role).
    - Generate a token with `whatsapp_business_messaging` and `whatsapp_business_management` permissions.
-4. **Connect in wacrm**:
-   - In wacrm, navigate to **Settings → WhatsApp Configuration**.
+4. **Connect in Broadcast Manager**:
+   - In Broadcast Manager, navigate to **Settings → WhatsApp Configuration**.
    - Enter your **Phone Number ID**, **WhatsApp Business Account (WABA) ID**, and **Permanent Access Token**.
    - Click **Save Configuration**.
 5. **Configure Webhook in Meta**:
    - In Meta Developer Portal → **WhatsApp → Configuration**.
    - Set **Callback URL** to: `https://your-domain.com/api/whatsapp/webhook`.
-   - Set **Verify Token** to the token generated in wacrm.
+   - Set **Verify Token** to the token generated in Broadcast Manager.
    - Under **Webhook Fields**, click **Manage** and subscribe to **`messages`**.
 
 Need help troubleshooting connection codes? See [`docs/whatsapp-connection-troubleshooting.md`](./docs/whatsapp-connection-troubleshooting.md).  
@@ -433,7 +443,7 @@ Running multiple phone numbers on one install? Check [`docs/multi-waba.md`](./do
 
 ## 🌍 Supported Languages (i18n)
 
-wacrm is fully internationalized out-of-the-box using `next-intl`:
+Broadcast Manager is fully internationalized out-of-the-box using `next-intl`:
 
 | Code | Language | Native Name | Status |
 |---|---|---|---|
@@ -448,7 +458,7 @@ To switch the primary language, update `NEXT_PUBLIC_APP_LOCALE` in `.env.local` 
 
 ## 🧪 Testing & Code Quality
 
-wacrm maintains a rigorous automated testing culture with zero tolerated test failures.
+Broadcast Manager maintains a rigorous automated testing suite with zero tolerated test failures.
 
 ```bash
 # Run full Vitest suite (1,063+ tests)
@@ -468,7 +478,7 @@ npm run format:check
 
 ## 🛡️ Security & Privacy Architecture
 
-Security in wacrm is proactive, not an afterthought:
+Security in Broadcast Manager is proactive, not an afterthought:
 
 - **Row-Level Security (RLS)**: Every single table in the PostgreSQL database enforces strict tenant isolation policies using `is_account_member(account_id)`.
 - **Cryptographic Protection**: Sensitive tokens (Meta System User tokens, OpenAI keys, Anthropic keys) are stored encrypted in the database using **AES-256-GCM**.
@@ -493,17 +503,6 @@ Please review our [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`.github/SECURITY.
 
 ---
 
-## 📄 License
-
-Distributed under the **MIT License**. You are free to fork, customize, re-brand, and self-host for personal or commercial use. See [`LICENSE`](./LICENSE) for more details.
-
----
-
 <div align="center">
   <p>Crafted for modern businesses that care about their customers.</p>
-  <p>
-    <a href="https://wacrm.tech">Website</a> &bull;
-    <a href="https://wacrm.tech/docs">Official Documentation</a> &bull;
-    <a href="https://github.com/ArnasDon/wacrm/issues">Report an Issue</a>
-  </p>
 </div>
