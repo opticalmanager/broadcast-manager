@@ -69,6 +69,10 @@ const nextConfig: NextConfig = {
   // Harmless outside Docker: `next start` keeps working as before.
   output: "standalone",
 
+  experimental: {
+    optimizePackageImports: ["lucide-react", "date-fns", "recharts"],
+  },
+
   /**
    * Cross-origin dev access (Next.js 16).
    *

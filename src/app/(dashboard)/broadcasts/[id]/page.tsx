@@ -57,6 +57,7 @@ import {
   isPausedRecipient,
 } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
+import BroadcastDetailLoading from './loading';
 
 interface StatCardProps {
   label: string;
@@ -732,11 +733,7 @@ export default function BroadcastDetailPage() {
   }
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-primary" />
-      </div>
-    );
+    return <BroadcastDetailLoading />;
   }
 
   if (error || !broadcast) {

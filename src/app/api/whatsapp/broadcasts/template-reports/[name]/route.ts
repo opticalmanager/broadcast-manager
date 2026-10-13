@@ -25,7 +25,10 @@ export async function GET(
     const { name } = await params;
     const templateName = decodeURIComponent(name);
 
-    const dossier = await getTemplateAudienceDossier(accountId, templateName);
+    const { searchParams } = new URL(request.url);
+    const forceFresh = searchParams.get('fresh') === 'true';
+
+    const dossier = await getTemplateAudienceDossier(accountId, templateName, forceFresh);
 
     return NextResponse.json({
       template: {

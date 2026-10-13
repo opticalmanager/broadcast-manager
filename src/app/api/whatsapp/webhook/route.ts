@@ -22,6 +22,7 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { invalidateTemplateAudienceCache } from '@/lib/broadcasts/template-audience-cache'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -563,6 +564,8 @@ async function flagBroadcastReplyIfAny(accountId: string, contactId: string) {
 
     if (updErr) {
       console.error('Error marking broadcast recipient replied:', updErr)
+    } else {
+      invalidateTemplateAudienceCache(accountId)
     }
   } catch (err) {
     console.error('flagBroadcastReplyIfAny failed:', err)

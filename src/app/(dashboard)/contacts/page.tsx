@@ -214,7 +214,8 @@ export default function ContactsPage() {
         .select('contact_id, sent_at, created_at, status, broadcasts(name, template_name)')
         .in('contact_id', contactIds)
         .in('status', ['sent', 'delivered', 'read', 'replied'])
-        .order('created_at', { ascending: false }),
+        .order('created_at', { ascending: false })
+        .limit(75),
     ]);
     if (seq !== fetchSeq.current) return; // superseded by a newer fetch
 

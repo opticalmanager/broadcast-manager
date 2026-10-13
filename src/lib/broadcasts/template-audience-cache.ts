@@ -26,6 +26,7 @@ export interface TagBreakdownItem {
   targeted: number;
   delivered: number;
   read: number;
+  replied: number;
   failed: number;
 }
 
@@ -86,24 +87,36 @@ export interface TemplateAudienceDossier {
   tagContactMap: Map<string, Set<string>>;
 }
 
-const CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes TTL
+// Industrial SWR Caching Constants:
+// Fresh window: 15 minutes (immediate return)
+// Stale window: 2 hours (return cached immediately in 0ms, revalidate in background)
+const CACHE_FRESH_TTL_MS = 15 * 60 * 1000;
+const CACHE_STALE_TTL_MS = 2 * 60 * 60 * 1000;
 
-// Use globalThis to persist cache across API route invocations in the Node process
+// Use globalThis to persist cache & in-flight promises across API route invocations in the Node process
 const globalCache = (globalThis as unknown as {
   __templateAudienceCache?: Map<string, TemplateAudienceDossier>;
+  __templateAudienceInFlight?: Map<string, Promise<TemplateAudienceDossier>>;
 });
 if (!globalCache.__templateAudienceCache) {
   globalCache.__templateAudienceCache = new Map();
 }
+if (!globalCache.__templateAudienceInFlight) {
+  globalCache.__templateAudienceInFlight = new Map();
+}
 const cache = globalCache.__templateAudienceCache;
+const inFlight = globalCache.__templateAudienceInFlight;
 
 export function invalidateTemplateAudienceCache(accountId: string, templateName?: string) {
   if (templateName) {
-    cache.delete(`${accountId}:${templateName}`);
+    const key = `${accountId}:${templateName}`;
+    cache.delete(key);
+    inFlight.delete(key);
   } else {
     for (const key of cache.keys()) {
       if (key.startsWith(`${accountId}:`)) {
         cache.delete(key);
+        inFlight.delete(key);
       }
     }
   }
@@ -118,10 +131,42 @@ export async function getTemplateAudienceDossier(
   const now = Date.now();
 
   const cached = cache.get(cacheKey);
-  if (!forceFresh && cached && now - cached.timestamp < CACHE_TTL_MS) {
-    return cached;
+  if (!forceFresh && cached) {
+    const age = now - cached.timestamp;
+    if (age < CACHE_FRESH_TTL_MS) {
+      return cached;
+    }
+    if (age < CACHE_STALE_TTL_MS) {
+      // Stale-While-Revalidate: serve cached immediately (0ms), revalidate in background
+      if (!inFlight.has(cacheKey)) {
+        const bgPromise = computeTemplateAudienceDossier(accountId, templateName)
+          .catch((err) => console.error('[template-cache] background SWR refresh failed:', err))
+          .finally(() => inFlight.delete(cacheKey));
+        inFlight.set(cacheKey, bgPromise as Promise<TemplateAudienceDossier>);
+      }
+      return cached;
+    }
   }
 
+  // Request Coalescing (Singleflight): coalesce multiple simultaneous requests into 1 execution
+  if (!forceFresh && inFlight.has(cacheKey)) {
+    return inFlight.get(cacheKey)!;
+  }
+
+  const promise = computeTemplateAudienceDossier(accountId, templateName).finally(() => {
+    inFlight.delete(cacheKey);
+  });
+
+  inFlight.set(cacheKey, promise);
+  return promise;
+}
+
+async function computeTemplateAudienceDossier(
+  accountId: string,
+  templateName: string
+): Promise<TemplateAudienceDossier> {
+  const cacheKey = `${accountId}:${templateName}`;
+  const now = Date.now();
   const admin = supabaseAdmin();
 
   // 1. Fetch all broadcasts for this template & account
@@ -155,36 +200,26 @@ export async function getTemplateAudienceDossier(
     throw new Error(`No broadcasts found for template '${templateName}'`);
   }
 
-  // 2. Fetch template metadata
-  const { data: templateRow } = await admin
-    .from('message_templates')
-    .select('*')
-    .eq('account_id', accountId)
-    .eq('name', templateName)
-    .maybeSingle();
+  // 2. Fetch template metadata & account tags in parallel
+  const [templateRes, tagsRes] = await Promise.all([
+    admin
+      .from('message_templates')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('name', templateName)
+      .maybeSingle(),
+    admin
+      .from('tags')
+      .select('id, name, color')
+      .eq('account_id', accountId)
+      .order('name', { ascending: true }),
+  ]);
 
-  // 3. Fetch account tags
-  const { data: dbTags } = await admin
-    .from('tags')
-    .select('id, name, color')
-    .eq('account_id', accountId)
-    .order('name', { ascending: true });
-
-  const tags = dbTags ?? [];
+  const templateRow = templateRes.data;
+  const tags = tagsRes.data ?? [];
   const isStoreTags = tags.some((t) => /^Store:\s*/i.test(t.name));
 
-  // 4. Page through broadcast_recipients across all campaigns for this template
   const bcIds = broadcasts.map((b) => b.id);
-  const contactHistory = new Map<string, ContactNetHistory>();
-
-  const errorCounts = {
-    undeliverable: 0,
-    ecosystem: 0,
-    rate_limit: 0,
-    service_window: 0,
-    other: 0,
-  };
-
   let grossRecipients = 0;
   let grossDelivered = 0;
   let grossRead = 0;
@@ -197,23 +232,69 @@ export async function getTemplateAudienceDossier(
     grossFailed += b.failed_count ?? 0;
   }
 
-  // Fetch recipients in 1,000-row chunks
-  let from = 0;
+  // 3. High-Performance Parallel Batching for broadcast_recipients (Worker Pool Concurrency: 8)
   const CHUNK = 1000;
-  let hasMore = true;
+  const chunkCount = Math.max(1, Math.ceil(grossRecipients / CHUNK));
+  const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i);
+  const rowsByChunk: Array<Array<{ contact_id: string; status: string; error_message: string | null; created_at: string }>> = new Array(chunkCount);
 
-  while (hasMore) {
-    const { data: recRows, error: recErr } = await admin
+  const CONCURRENCY = 8;
+  let nextChunkIdx = 0;
+
+  async function recipientWorker() {
+    while (nextChunkIdx < chunkIndices.length) {
+      const idx = nextChunkIdx++;
+      const from = idx * CHUNK;
+      const to = from + CHUNK - 1;
+      const { data, error } = await admin
+        .from('broadcast_recipients')
+        .select('contact_id, status, error_message, created_at')
+        .in('broadcast_id', bcIds)
+        .range(from, to);
+
+      if (error) {
+        console.error(`[template-cache] chunk ${idx} failed:`, error.message);
+        rowsByChunk[idx] = [];
+      } else {
+        rowsByChunk[idx] = data ?? [];
+      }
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, chunkCount) }, recipientWorker)
+  );
+
+  // If the last chunk is full, handle any trailing overflow chunks
+  let lastChunk = rowsByChunk[chunkCount - 1] ?? [];
+  let overflowFrom = chunkCount * CHUNK;
+  while (lastChunk.length === CHUNK) {
+    const { data, error } = await admin
       .from('broadcast_recipients')
       .select('contact_id, status, error_message, created_at')
       .in('broadcast_id', bcIds)
-      .range(from, from + CHUNK - 1);
+      .range(overflowFrom, overflowFrom + CHUNK - 1);
 
-    if (recErr || !recRows || recRows.length === 0) {
-      break;
-    }
+    if (error || !data || data.length === 0) break;
+    rowsByChunk.push(data);
+    lastChunk = data;
+    if (data.length < CHUNK) break;
+    overflowFrom += CHUNK;
+  }
 
-    for (const r of recRows) {
+  // 4. Ingest recipient rows into deduplicated contact history
+  const contactHistory = new Map<string, ContactNetHistory>();
+  const errorCounts = {
+    undeliverable: 0,
+    ecosystem: 0,
+    rate_limit: 0,
+    service_window: 0,
+    other: 0,
+  };
+
+  for (const chunk of rowsByChunk) {
+    if (!chunk) continue;
+    for (const r of chunk) {
       if (!r.contact_id) continue;
 
       if (r.status === 'failed' && r.error_message) {
@@ -254,10 +335,10 @@ export async function getTemplateAudienceDossier(
           if (r.error_message) existing.lastError = r.error_message;
         }
 
-        if (r.status === 'read') {
-          existing.bestStatus = 'read';
-        } else if (r.status === 'replied') {
+        if (r.status === 'replied') {
           existing.bestStatus = 'replied';
+        } else if (r.status === 'read' && existing.bestStatus !== 'replied') {
+          existing.bestStatus = 'read';
         } else if (r.status === 'delivered' && existing.bestStatus !== 'read' && existing.bestStatus !== 'replied') {
           existing.bestStatus = 'delivered';
         } else if (
@@ -274,12 +355,6 @@ export async function getTemplateAudienceDossier(
           existing.bestStatus = r.status as ContactNetHistory['bestStatus'];
         }
       }
-    }
-
-    if (recRows.length < CHUNK) {
-      hasMore = false;
-    } else {
-      from += CHUNK;
     }
   }
 
@@ -334,48 +409,86 @@ export async function getTemplateAudienceDossier(
     };
   });
 
-  // 7. Deduplicated Tag / Segment Breakdown
-  // Candidate tags: Prioritize store tags if present; otherwise general account tags with contacts
+  // 7. Fast Parallel Tag & Store Breakdown
   const candidateTags = isStoreTags
     ? tags.filter((t) => /^Store:\s*/i.test(t.name))
     : tags;
+  const candidateTagIds = candidateTags.map((t) => t.id);
 
   const tagContactMap = new Map<string, Set<string>>();
+  for (const t of candidateTags) {
+    tagContactMap.set(t.id, new Set<string>());
+  }
+
+  if (candidateTagIds.length > 0) {
+    const TAG_CHUNK = 1000;
+    const { data: firstTagChunk, count: tagCount } = await admin
+      .from('contact_tags')
+      .select('tag_id, contact_id', { count: 'exact' })
+      .in('tag_id', candidateTagIds)
+      .range(0, TAG_CHUNK - 1);
+
+    const allTagRows: Array<{ tag_id: string; contact_id: string }> = firstTagChunk ?? [];
+    const totalTagRows = tagCount ?? allTagRows.length;
+
+    if (totalTagRows > TAG_CHUNK) {
+      const remainingTagChunks = Math.ceil((totalTagRows - TAG_CHUNK) / TAG_CHUNK);
+      const tagChunkIndices = Array.from({ length: remainingTagChunks }, (_, i) => i + 1);
+      const TAG_CONCURRENCY = 6;
+      let nextTagChunkIdx = 0;
+
+      async function tagWorker() {
+        while (nextTagChunkIdx < tagChunkIndices.length) {
+          const idx = tagChunkIndices[nextTagChunkIdx++];
+          const from = idx * TAG_CHUNK;
+          const to = from + TAG_CHUNK - 1;
+          const { data } = await admin
+            .from('contact_tags')
+            .select('tag_id, contact_id')
+            .in('tag_id', candidateTagIds)
+            .range(from, to);
+
+          if (data && data.length > 0) {
+            allTagRows.push(...data);
+          }
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(TAG_CONCURRENCY, remainingTagChunks) }, tagWorker)
+      );
+    }
+
+    for (const row of allTagRows) {
+      if (row.contact_id && row.tag_id) {
+        const s = tagContactMap.get(row.tag_id);
+        if (s) s.add(row.contact_id);
+      }
+    }
+  }
+
+  // Compute outcomes for contacts per tag
   const tagBreakdown: TagBreakdownItem[] = [];
 
   for (const t of candidateTags) {
-    // Fetch all contact IDs with this tag in chunks of 1000
-    const contactIdsForTag = new Set<string>();
-    let tagFrom = 0;
-    while (true) {
-      const { data: ctagRows } = await admin
-        .from('contact_tags')
-        .select('contact_id')
-        .eq('tag_id', t.id)
-        .range(tagFrom, tagFrom + 999);
+    const contactIdsForTag = tagContactMap.get(t.id) ?? new Set<string>();
 
-      if (!ctagRows || ctagRows.length === 0) break;
-      for (const row of ctagRows) {
-        if (row.contact_id) contactIdsForTag.add(row.contact_id);
-      }
-      if (ctagRows.length < 1000) break;
-      tagFrom += 1000;
-    }
-
-    tagContactMap.set(t.id, contactIdsForTag);
-
-    // Compute STRICT deduplicated outcomes for contacts in this template
     let tagTargeted = 0;
     let tagDelivered = 0;
     let tagRead = 0;
+    let tagReplied = 0;
     let tagFailed = 0;
 
     for (const cid of contactIdsForTag) {
       const ch = contactHistory.get(cid);
-      if (!ch) continue; // Contact was not targeted with this template
+      if (!ch) continue;
 
       tagTargeted++;
-      if (ch.bestStatus === 'read' || ch.bestStatus === 'replied') {
+      if (ch.bestStatus === 'replied') {
+        tagReplied++;
+        tagRead++;
+        tagDelivered++;
+      } else if (ch.bestStatus === 'read') {
         tagRead++;
         tagDelivered++;
       } else if (ch.bestStatus === 'delivered') {
@@ -393,12 +506,12 @@ export async function getTemplateAudienceDossier(
         targeted: tagTargeted,
         delivered: tagDelivered,
         read: tagRead,
+        replied: tagReplied,
         failed: tagFailed,
       });
     }
   }
 
-  // Sort breakdown by targeted descending
   tagBreakdown.sort((a, b) => b.targeted - a.targeted);
 
   const dossier: TemplateAudienceDossier = {

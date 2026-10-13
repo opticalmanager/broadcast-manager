@@ -34,6 +34,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import TemplateReportLoading from './loading';
 
 interface TemplateDossier {
   template: {
@@ -90,6 +91,7 @@ interface TemplateDossier {
     targeted: number;
     delivered: number;
     read: number;
+    replied: number;
     failed: number;
   }>;
 }
@@ -207,7 +209,7 @@ export default function TemplateReportDetailPage() {
   // Recipients pagination & filters
   const [recipients, setRecipients] = useState<RecipientItem[]>([]);
   const [recipientsLoading, setRecipientsLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'delivered' | 'read' | 'failed'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'delivered' | 'read' | 'replied' | 'failed'>('all');
   const [storeFilter, setStoreFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -353,12 +355,7 @@ export default function TemplateReportDetailPage() {
   }
 
   if (loading) {
-    return (
-      <div className="flex h-72 flex-col items-center justify-center gap-3">
-        <Loader2 className="h-7 w-7 animate-spin text-primary" />
-        <p className="text-xs text-muted-foreground">Aggregating template performance...</p>
-      </div>
-    );
+    return <TemplateReportLoading />;
   }
 
   if (error || !dossier) {
@@ -387,7 +384,7 @@ export default function TemplateReportDetailPage() {
         net_sent: activeTagItem.targeted,
         net_delivered: activeTagItem.delivered,
         net_read: activeTagItem.read,
-        net_replied: 0,
+        net_replied: activeTagItem.replied ?? 0,
         net_failed: activeTagItem.failed,
         gross_recipients: activeTagItem.targeted,
       }
@@ -663,9 +660,10 @@ export default function TemplateReportDetailPage() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-1 text-[11px] text-muted-foreground">
+                  <div className="grid grid-cols-4 gap-1 text-[11px] text-muted-foreground">
                     <div>Target: <strong className="text-foreground">{s.targeted.toLocaleString()}</strong></div>
-                    <div>Delivered: <strong className="text-teal-400">{s.delivered.toLocaleString()}</strong></div>
+                    <div>Deliv: <strong className="text-teal-400">{s.delivered.toLocaleString()}</strong></div>
+                    <div>Replied: <strong className="text-indigo-400">{(s.replied ?? 0).toLocaleString()}</strong></div>
                     <div>Failed: <strong className="text-red-400">{s.failed.toLocaleString()}</strong></div>
                   </div>
 
@@ -692,45 +690,45 @@ export default function TemplateReportDetailPage() {
               Net Conversion Funnel (De-duplicated)
             </h3>
             <span className="text-xs text-muted-foreground">
-              {stats.total_unique_contacts.toLocaleString()} Total Contacts
+              {displayStats.total_unique_contacts.toLocaleString()} Total Contacts
             </span>
           </div>
 
           <div className="space-y-2.5">
             <FunnelStepRow
               label="Targeted"
-              value={stats.total_unique_contacts}
+              value={displayStats.total_unique_contacts}
               max={maxFunnel}
               color="bg-muted-foreground/30"
-              ofTotal={stats.total_unique_contacts}
+              ofTotal={displayStats.total_unique_contacts}
             />
             <FunnelStepRow
               label="Sent"
-              value={stats.net_sent}
+              value={displayStats.net_sent}
               max={maxFunnel}
               color="bg-primary"
-              ofTotal={stats.total_unique_contacts}
+              ofTotal={displayStats.total_unique_contacts}
             />
             <FunnelStepRow
               label="Delivered"
-              value={stats.net_delivered}
+              value={displayStats.net_delivered}
               max={maxFunnel}
               color="bg-teal-500"
-              ofTotal={stats.total_unique_contacts}
+              ofTotal={displayStats.total_unique_contacts}
             />
             <FunnelStepRow
               label="Read"
-              value={stats.net_read}
+              value={displayStats.net_read}
               max={maxFunnel}
               color="bg-blue-500"
-              ofTotal={stats.total_unique_contacts}
+              ofTotal={displayStats.total_unique_contacts}
             />
             <FunnelStepRow
               label="Replied"
-              value={stats.net_replied}
+              value={displayStats.net_replied}
               max={maxFunnel}
               color="bg-indigo-500"
-              ofTotal={stats.total_unique_contacts}
+              ofTotal={displayStats.total_unique_contacts}
             />
           </div>
         </div>
@@ -962,8 +960,8 @@ export default function TemplateReportDetailPage() {
             )}
 
             {/* Filter Tabs */}
-            <div className="flex items-center rounded-lg bg-muted p-0.5 text-xs">
-              {(['all', 'delivered', 'read', 'failed'] as const).map((st) => (
+            <div className="flex items-center rounded-lg bg-muted p-0.5 text-xs overflow-x-auto scrollbar-none max-w-full">
+              {(['all', 'delivered', 'read', 'replied', 'failed'] as const).map((st) => (
                 <button
                   key={st}
                   type="button"
@@ -971,7 +969,7 @@ export default function TemplateReportDetailPage() {
                     setStatusFilter(st);
                     setPage(1);
                   }}
-                  className={`rounded-md px-2.5 py-1 text-xs capitalize transition ${
+                  className={`rounded-md px-2.5 py-1 text-xs capitalize transition shrink-0 ${
                     statusFilter === st
                       ? 'bg-background font-semibold text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground'
@@ -1037,7 +1035,9 @@ export default function TemplateReportDetailPage() {
             <div className="flex flex-col gap-2.5 sm:hidden">
               {recipients.map((r) => {
                 const statusColor =
-                  r.net_status === 'read'
+                  r.net_status === 'replied'
+                    ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-400'
+                    : r.net_status === 'read'
                     ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
                     : r.net_status === 'delivered'
                     ? 'border-teal-500/30 bg-teal-500/10 text-teal-400'
@@ -1122,7 +1122,9 @@ export default function TemplateReportDetailPage() {
                 <tbody className="divide-y divide-border">
                   {recipients.map((r) => {
                     const statusColor =
-                      r.net_status === 'read'
+                      r.net_status === 'replied'
+                        ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-400'
+                        : r.net_status === 'read'
                         ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
                         : r.net_status === 'delivered'
                         ? 'border-teal-500/30 bg-teal-500/10 text-teal-400'
