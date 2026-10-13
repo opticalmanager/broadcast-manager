@@ -25,6 +25,7 @@ import {
   releaseBroadcastDelivery,
 } from '@/lib/whatsapp/broadcast-resume';
 import { deliverBroadcast, finalizeBroadcastStatus } from '@/lib/whatsapp/broadcast-core';
+import { invalidateTemplateAudienceCache } from '@/lib/broadcasts/template-audience-cache';
 
 export const maxDuration = 300;
 
@@ -235,6 +236,8 @@ export async function POST(
         await releaseBroadcastDelivery(admin, newBroadcast.id).catch(() => {});
       }
     });
+
+    invalidateTemplateAudienceCache(accountId, templateName);
 
     return NextResponse.json(
       {

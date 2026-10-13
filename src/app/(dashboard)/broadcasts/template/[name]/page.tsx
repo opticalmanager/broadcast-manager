@@ -82,6 +82,7 @@ interface TemplateDossier {
     retry_of_broadcast_id: string | null;
   }>;
   tags?: Array<{ id: string; name: string; color: string }>;
+  is_store_tags?: boolean;
   store_breakdown?: Array<{
     tag_id: string;
     tag_name: string;
@@ -217,6 +218,7 @@ export default function TemplateReportDetailPage() {
   // Actions state
   const [retrying, setRetrying] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [runsExpanded, setRunsExpanded] = useState(false);
 
   // Debounce search input
   useEffect(() => {
@@ -370,9 +372,32 @@ export default function TemplateReportDetailPage() {
     );
   }
 
-  const { template, stats, error_diagnostics, campaign_runs, store_breakdown, tags } = dossier;
-  const maxFunnel = Math.max(stats.total_unique_contacts, 1);
-  const storeTags = (tags ?? []).filter((t) => t.name.toLowerCase().startsWith('store:'));
+  const { template, stats, error_diagnostics, campaign_runs, store_breakdown, tags, is_store_tags } = dossier;
+
+  // Active segment item when a store/tag filter is selected
+  const activeTagItem =
+    storeFilter !== 'all'
+      ? store_breakdown?.find((s) => s.tag_id === storeFilter) || null
+      : null;
+
+  // Display stats: dynamically reflect selected store/segment when filtered
+  const displayStats = activeTagItem
+    ? {
+        total_unique_contacts: activeTagItem.targeted,
+        net_sent: activeTagItem.targeted,
+        net_delivered: activeTagItem.delivered,
+        net_read: activeTagItem.read,
+        net_replied: 0,
+        net_failed: activeTagItem.failed,
+        gross_recipients: activeTagItem.targeted,
+      }
+    : stats;
+
+  const maxFunnel = Math.max(displayStats.total_unique_contacts, 1);
+  const availableTags =
+    store_breakdown && store_breakdown.length > 0
+      ? store_breakdown.map((s) => ({ id: s.tag_id, name: s.tag_name, color: s.color }))
+      : (tags ?? []).map((t) => ({ id: t.id, name: t.name, color: t.color }));
 
   return (
     <div className="space-y-5 sm:space-y-6 pb-12">
@@ -494,76 +519,113 @@ export default function TemplateReportDetailPage() {
         </div>
       )}
 
-      {/* 7 StatCards Grid */}
+      {/* Active Segment Filter Banner */}
+      {activeTagItem && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-primary/40 bg-primary/10 px-4 py-3 text-xs shadow-xs">
+          <div className="flex items-center gap-2">
+            <span
+              className="h-3 w-3 rounded-full shrink-0 shadow-xs"
+              style={{ backgroundColor: activeTagItem.color }}
+            />
+            <span className="text-foreground">
+              Showing performance for segment:{' '}
+              <strong className="text-primary font-bold text-sm">
+                {activeTagItem.tag_name}
+              </strong>{' '}
+              ({activeTagItem.targeted.toLocaleString()} targeted contacts)
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setStoreFilter('all');
+              setPage(1);
+            }}
+            className="h-7 text-xs border-primary/30 text-primary hover:bg-primary hover:text-primary-foreground font-semibold shrink-0"
+          >
+            Reset to All Audience ✕
+          </Button>
+        </div>
+      )}
+
+      {/* 7 StatCards Grid (Dynamically reflecting selected store/segment) */}
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">
         <StatCard
-          label="Unique Audience"
-          value={stats.total_unique_contacts}
-          total={stats.total_unique_contacts}
+          label={activeTagItem ? `${activeTagItem.tag_name} Audience` : 'Unique Audience'}
+          value={displayStats.total_unique_contacts}
+          total={displayStats.total_unique_contacts}
           icon={<Users className="h-4 w-4" />}
           color="bg-muted text-muted-foreground"
-          sublabel="De-duplicated contacts"
+          sublabel={activeTagItem ? 'Targeted in this segment' : 'De-duplicated contacts'}
         />
         <StatCard
           label="Net Sent"
-          value={stats.net_sent}
-          total={stats.total_unique_contacts}
+          value={displayStats.net_sent}
+          total={displayStats.total_unique_contacts}
           icon={<Send className="h-4 w-4" />}
           color="bg-primary/10 text-primary"
           sublabel="Dispatched to Meta"
         />
         <StatCard
           label="Net Delivered"
-          value={stats.net_delivered}
-          total={stats.total_unique_contacts}
+          value={displayStats.net_delivered}
+          total={displayStats.total_unique_contacts}
           icon={<CheckCheck className="h-4 w-4" />}
           color="bg-teal-500/10 text-teal-400"
           sublabel="Received on devices"
         />
         <StatCard
           label="Net Read"
-          value={stats.net_read}
-          total={stats.total_unique_contacts}
+          value={displayStats.net_read}
+          total={displayStats.total_unique_contacts}
           icon={<Eye className="h-4 w-4" />}
           color="bg-blue-500/10 text-blue-400"
           sublabel="Blue double ticks"
         />
         <StatCard
           label="Net Replied"
-          value={stats.net_replied}
-          total={stats.total_unique_contacts}
+          value={displayStats.net_replied}
+          total={displayStats.total_unique_contacts}
           icon={<MessageCircle className="h-4 w-4" />}
           color="bg-indigo-500/10 text-indigo-400"
           sublabel="Customer responded"
         />
         <StatCard
           label="Net Failed"
-          value={stats.net_failed}
-          total={stats.total_unique_contacts}
+          value={displayStats.net_failed}
+          total={displayStats.total_unique_contacts}
           icon={<AlertCircle className="h-4 w-4" />}
           color="bg-red-500/10 text-red-400"
           sublabel="Unreachable in all runs"
         />
         <StatCard
           label="Gross Attempts"
-          value={stats.gross_recipients}
-          total={stats.gross_recipients}
+          value={displayStats.gross_recipients}
+          total={displayStats.gross_recipients}
           icon={<RotateCcw className="h-4 w-4" />}
           color="bg-amber-500/10 text-amber-400"
-          sublabel={`${campaign_runs.length} total runs volume`}
+          sublabel={activeTagItem ? 'Segment attempts' : `${campaign_runs.length} total runs volume`}
         />
       </div>
 
-      {/* Physical Store Performance Breakdown Card */}
+      {/* Segment / Store Performance Breakdown Card (Multi-Tenant Aware) */}
       {store_breakdown && store_breakdown.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Store className="h-4 w-4 text-primary" />
-              Store-Wise Delivery Performance
+              {is_store_tags ? (
+                <Store className="h-4 w-4 text-primary" />
+              ) : (
+                <Users className="h-4 w-4 text-primary" />
+              )}
+              {is_store_tags
+                ? 'Store-Wise Delivery Performance'
+                : 'Audience Segment & Tag Breakdown'}
             </h3>
             <span className="text-xs text-muted-foreground">
-              Click any store to filter recipient table below
+              Click any {is_store_tags ? 'store' : 'segment'} to filter upper KPIs and contact list below
             </span>
           </div>
 
@@ -581,7 +643,7 @@ export default function TemplateReportDetailPage() {
                   }}
                   className={`rounded-lg border p-3 cursor-pointer transition text-xs space-y-1.5 ${
                     isSelected
-                      ? 'border-primary bg-primary/10 shadow-sm'
+                      ? 'border-primary bg-primary/10 shadow-sm ring-1 ring-primary'
                       : 'border-border/80 bg-background/50 hover:border-primary/40'
                   }`}
                 >
@@ -729,96 +791,127 @@ export default function TemplateReportDetailPage() {
         </div>
       </div>
 
-      {/* Campaign Runs Timeline & Retries Chain Card */}
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Clock className="h-4 w-4 text-primary" />
-            Campaign Runs & Retries Chain ({campaign_runs.length})
-          </h3>
-          <span className="text-xs text-muted-foreground">
-            All campaigns launched using this template
-          </span>
-        </div>
-
-        {/* Mobile touch cards for runs */}
-        <div className="flex flex-col gap-2.5 sm:hidden">
-          {campaign_runs.map((run, idx) => (
-            <div
-              key={run.id}
-              onClick={() => router.push(`/broadcasts/${run.id}`)}
-              className="rounded-lg border border-border bg-background/60 p-3 text-xs space-y-2 transition active:bg-muted/50 cursor-pointer"
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-foreground truncate pr-2">
-                  {idx === 0 ? 'Run 1 (Initial)' : `Run ${idx + 1} (Retry)`}: {run.name}
-                </span>
-                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] capitalize bg-muted text-muted-foreground shrink-0">
-                  {run.status}
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-1 text-[11px] text-muted-foreground bg-muted/30 p-2 rounded">
-                <div>Targeted: <strong className="text-foreground">{run.total_recipients}</strong></div>
-                <div>Delivered: <strong className="text-teal-400">{run.delivered_count}</strong></div>
-                <div>Failed: <strong className="text-red-400">{run.failed_count}</strong></div>
-              </div>
-              <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1">
-                <span>{new Date(run.created_at).toLocaleString()}</span>
-                <span className="text-primary flex items-center gap-1 font-medium">
-                  View Run Report <ChevronRight className="h-3 w-3" />
-                </span>
-              </div>
+      {/* Campaign Runs Timeline & Retries Chain Card (Collapsible Dropdown, Closed by default) */}
+      <div className="rounded-xl border border-border bg-card overflow-hidden shadow-sm transition">
+        <button
+          type="button"
+          onClick={() => setRunsExpanded(!runsExpanded)}
+          className="w-full flex items-center justify-between p-4 text-left hover:bg-muted/30 transition cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="rounded-lg bg-primary/10 p-2 text-primary shrink-0">
+              <Clock className="h-4 w-4" />
             </div>
-          ))}
-        </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Campaign Runs & Retries Chain
+                </h3>
+                <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">
+                  {campaign_runs.length} {campaign_runs.length === 1 ? 'Run' : 'Runs (Initial + Retries)'}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {runsExpanded
+                  ? 'Click to collapse run history'
+                  : 'Click to expand run history and view individual campaign reports'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs font-medium text-muted-foreground hidden sm:inline">
+              {runsExpanded ? 'Hide Runs' : 'Show Runs'}
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${
+                runsExpanded ? 'rotate-180' : ''
+              }`}
+            />
+          </div>
+        </button>
 
-        {/* Desktop Table for runs */}
-        <div className="hidden sm:block overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-muted/40 text-muted-foreground border-b border-border">
-              <tr>
-                <th className="py-2.5 px-3">Run & Campaign Name</th>
-                <th className="py-2.5 px-3">Status</th>
-                <th className="py-2.5 px-3 text-right">Targeted</th>
-                <th className="py-2.5 px-3 text-right">Delivered</th>
-                <th className="py-2.5 px-3 text-right">Failed</th>
-                <th className="py-2.5 px-3">Date</th>
-                <th className="py-2.5 px-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
+        {runsExpanded && (
+          <div className="p-4 pt-0 border-t border-border/50 space-y-3">
+            {/* Mobile touch cards for runs */}
+            <div className="flex flex-col gap-2.5 sm:hidden pt-3">
               {campaign_runs.map((run, idx) => (
-                <tr key={run.id} className="hover:bg-muted/30 transition">
-                  <td className="py-2.5 px-3 font-medium text-foreground">
-                    <span className="mr-2 inline-block rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                      {idx === 0 ? 'Initial' : `Retry #${idx}`}
+                <div
+                  key={run.id}
+                  onClick={() => router.push(`/broadcasts/${run.id}`)}
+                  className="rounded-lg border border-border bg-background/60 p-3 text-xs space-y-2 transition active:bg-muted/50 cursor-pointer"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-foreground truncate pr-2">
+                      {idx === 0 ? 'Run 1 (Initial)' : `Run ${idx + 1} (Retry)`}: {run.name}
                     </span>
-                    {run.name}
-                  </td>
-                  <td className="py-2.5 px-3">
-                    <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-[10px] capitalize bg-muted text-muted-foreground">
+                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] capitalize bg-muted text-muted-foreground shrink-0">
                       {run.status}
                     </span>
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-foreground">{run.total_recipients.toLocaleString()}</td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-teal-400 font-medium">{run.delivered_count.toLocaleString()}</td>
-                  <td className="py-2.5 px-3 text-right tabular-nums text-red-400 font-medium">{run.failed_count.toLocaleString()}</td>
-                  <td className="py-2.5 px-3 text-muted-foreground">{new Date(run.created_at).toLocaleDateString()}</td>
-                  <td className="py-2.5 px-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => router.push(`/broadcasts/${run.id}`)}
-                      className="h-7 text-xs text-primary hover:text-primary/90"
-                    >
-                      Report <ExternalLink className="h-3 w-3 ml-1" />
-                    </Button>
-                  </td>
-                </tr>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[11px] text-muted-foreground bg-muted/30 p-2 rounded">
+                    <div>Targeted: <strong className="text-foreground">{run.total_recipients}</strong></div>
+                    <div>Delivered: <strong className="text-teal-400">{run.delivered_count}</strong></div>
+                    <div>Failed: <strong className="text-red-400">{run.failed_count}</strong></div>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1">
+                    <span>{new Date(run.created_at).toLocaleString()}</span>
+                    <span className="text-primary flex items-center gap-1 font-medium">
+                      View Run Report <ChevronRight className="h-3 w-3" />
+                    </span>
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </div>
+
+            {/* Desktop Table for runs */}
+            <div className="hidden sm:block overflow-x-auto rounded-lg border border-border mt-3">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-muted/40 text-muted-foreground border-b border-border">
+                  <tr>
+                    <th className="py-2.5 px-3">Run & Campaign Name</th>
+                    <th className="py-2.5 px-3">Status</th>
+                    <th className="py-2.5 px-3 text-right">Targeted</th>
+                    <th className="py-2.5 px-3 text-right">Delivered</th>
+                    <th className="py-2.5 px-3 text-right">Failed</th>
+                    <th className="py-2.5 px-3">Date</th>
+                    <th className="py-2.5 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {campaign_runs.map((run, idx) => (
+                    <tr key={run.id} className="hover:bg-muted/30 transition">
+                      <td className="py-2.5 px-3 font-medium text-foreground">
+                        <span className="mr-2 inline-block rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                          {idx === 0 ? 'Initial' : `Retry #${idx}`}
+                        </span>
+                        {run.name}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-[10px] capitalize bg-muted text-muted-foreground">
+                          {run.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right tabular-nums text-foreground">{run.total_recipients.toLocaleString()}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums text-teal-400 font-medium">{run.delivered_count.toLocaleString()}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums text-red-400 font-medium">{run.failed_count.toLocaleString()}</td>
+                      <td className="py-2.5 px-3 text-muted-foreground">{new Date(run.created_at).toLocaleDateString()}</td>
+                      <td className="py-2.5 px-3 text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => router.push(`/broadcasts/${run.id}`)}
+                          className="h-7 text-xs text-primary hover:text-primary/90"
+                        >
+                          Report <ExternalLink className="h-3 w-3 ml-1" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Net Contact-Level Recipients Table */}
@@ -845,8 +938,8 @@ export default function TemplateReportDetailPage() {
               />
             </div>
 
-            {/* Store Tag Filter Dropdown */}
-            {storeTags.length > 0 && (
+            {/* Segment / Tag Filter Dropdown (Multi-Tenant Aware) */}
+            {availableTags.length > 0 && (
               <div className="flex items-center">
                 <select
                   value={storeFilter}
@@ -854,10 +947,12 @@ export default function TemplateReportDetailPage() {
                     setStoreFilter(e.target.value);
                     setPage(1);
                   }}
-                  className="h-8 rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  className="h-8 rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-medium"
                 >
-                  <option value="all">🏬 All Stores</option>
-                  {storeTags.map((st) => (
+                  <option value="all">
+                    {is_store_tags ? '🏬 All Stores' : '🏷️ All Segments'}
+                  </option>
+                  {availableTags.map((st) => (
                     <option key={st.id} value={st.id}>
                       {st.name}
                     </option>
