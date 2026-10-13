@@ -158,10 +158,19 @@ function BroadcastsContent() {
     }
   }, []);
 
+  const templateCount = useMemo(() => {
+    return new Set(broadcasts.map((b) => b.template_name).filter(Boolean)).size;
+  }, [broadcasts]);
+
   useEffect(() => {
     fetchBroadcasts();
-    fetchTemplates();
-  }, [fetchBroadcasts, fetchTemplates]);
+  }, [fetchBroadcasts]);
+
+  useEffect(() => {
+    if (view === 'templates') {
+      fetchTemplates();
+    }
+  }, [fetchTemplates, view]);
 
   // Keep view in sync if URL query parameter changes
   useEffect(() => {
@@ -303,26 +312,45 @@ function BroadcastsContent() {
             {t('subtitle')}
           </p>
         </div>
-        <GatedButton
-          canAct={canCreate}
-          gateReason="create broadcasts"
-          onClick={() => router.push('/broadcasts/new')}
-          className="w-full sm:w-auto h-9 bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-semibold"
-        >
-          <Plus className="h-4 w-4" />
-          {t('newBroadcast')}
-        </GatedButton>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              const nextView = view === 'templates' ? 'campaigns' : 'templates';
+              setView(nextView);
+              router.replace(nextView === 'templates' ? '/broadcasts?view=templates' : '/broadcasts');
+            }}
+            className={`h-9 text-xs font-semibold border-border transition ${
+              view === 'templates'
+                ? 'bg-primary text-primary-foreground border-primary hover:bg-primary/90 shadow-sm'
+                : 'bg-card text-foreground hover:bg-muted border-border shadow-sm'
+            }`}
+          >
+            <FileText className="h-4 w-4 mr-1.5" />
+            {view === 'templates' ? 'View Campaigns List' : `Template Reports (${templateCount})`}
+          </Button>
+
+          <GatedButton
+            canAct={canCreate}
+            gateReason="create broadcasts"
+            onClick={() => router.push('/broadcasts/new')}
+            className="w-full sm:w-auto h-9 bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-semibold"
+          >
+            <Plus className="h-4 w-4" />
+            {t('newBroadcast')}
+          </GatedButton>
+        </div>
       </div>
 
       {/* Segmented View Switcher (Mobile-native touch feel) */}
-      <div className="flex items-center gap-1 rounded-xl border border-border bg-muted/50 p-1 text-xs">
+      <div className="flex items-center gap-1.5 rounded-xl border border-border bg-muted/50 p-1 text-xs">
         <button
           type="button"
           onClick={() => {
             setView('campaigns');
             router.replace('/broadcasts');
           }}
-          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3 py-2 sm:py-1.5 font-semibold transition ${
+          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3.5 py-2 sm:py-1.5 font-semibold transition ${
             view === 'campaigns'
               ? 'bg-card text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground'
@@ -338,14 +366,14 @@ function BroadcastsContent() {
             setView('templates');
             router.replace('/broadcasts?view=templates');
           }}
-          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3 py-2 sm:py-1.5 font-semibold transition ${
+          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3.5 py-2 sm:py-1.5 font-semibold transition ${
             view === 'templates'
-              ? 'bg-card text-foreground shadow-sm'
+              ? 'bg-card text-primary shadow-sm border border-primary/20'
               : 'text-muted-foreground hover:text-foreground'
           }`}
         >
           <FileText className="h-3.5 w-3.5" />
-          By Template ({templateSummaries.length})
+          Template Performance Reports ({templateSummaries.length > 0 ? templateSummaries.length : templateCount})
         </button>
       </div>
 
@@ -607,9 +635,24 @@ function BroadcastsContent() {
                           <h2 className="truncate text-base font-semibold text-foreground">
                             {broadcast.name}
                           </h2>
-                          <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <FileText className="h-3.5 w-3.5 shrink-0" />
-                            <span className="truncate">{broadcast.template_name}</span>
+                          <div className="mt-1 flex items-center justify-between gap-2">
+                            {broadcast.template_name ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  router.push(`/broadcasts/template/${encodeURIComponent(broadcast.template_name)}`);
+                                }}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10 transition"
+                                title="View template report"
+                              >
+                                <FileText className="h-3 w-3" />
+                                <span className="truncate max-w-[150px]">{broadcast.template_name}</span>
+                                <span className="text-[10px] text-muted-foreground ml-0.5">Report →</span>
+                              </button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">-</span>
+                            )}
                           </div>
                         </div>
                         <span
@@ -671,7 +714,7 @@ function BroadcastsContent() {
                   <TableHeader>
                     <TableRow className="border-border hover:bg-transparent">
                       <TableHead className="text-muted-foreground">{t('table.name')}</TableHead>
-                      <TableHead className="hidden text-muted-foreground md:table-cell">{t('table.template')}</TableHead>
+                      <TableHead className="hidden text-muted-foreground md:table-cell">Template (Report)</TableHead>
                       <TableHead className="hidden text-right text-muted-foreground sm:table-cell">
                         {t('table.recipients')}
                       </TableHead>
@@ -693,8 +736,21 @@ function BroadcastsContent() {
                           <TableCell className="font-medium text-foreground">
                             {broadcast.name}
                           </TableCell>
-                          <TableCell className="hidden text-muted-foreground md:table-cell">
-                            {broadcast.template_name}
+                          <TableCell className="hidden md:table-cell" onClick={(e) => e.stopPropagation()}>
+                            {broadcast.template_name ? (
+                              <button
+                                type="button"
+                                onClick={() => router.push(`/broadcasts/template/${encodeURIComponent(broadcast.template_name)}`)}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:border-primary hover:text-primary hover:bg-primary/5 transition shadow-sm"
+                                title={`Open ${broadcast.template_name} full template report`}
+                              >
+                                <FileText className="h-3 w-3 text-primary" />
+                                <span className="truncate max-w-[140px]">{broadcast.template_name}</span>
+                                <ArrowRight className="h-3 w-3 opacity-60 ml-0.5" />
+                              </button>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">-</span>
+                            )}
                           </TableCell>
                           <TableCell className="hidden text-right text-muted-foreground tabular-nums sm:table-cell">
                             {broadcast.total_recipients}

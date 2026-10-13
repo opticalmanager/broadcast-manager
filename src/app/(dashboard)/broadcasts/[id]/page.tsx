@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast, BroadcastRecipient, RecipientStatus } from '@/types';
@@ -47,6 +47,7 @@ import {
   ShieldAlert,
   Ban,
   Store,
+  FileText,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -215,6 +216,7 @@ export default function BroadcastDetailPage() {
   const [pausing, setPausing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [blacklisting, setBlacklisting] = useState(false);
+  const tagsLoadedRef = useRef(false);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -317,52 +319,55 @@ export default function BroadcastDetailPage() {
         ecosystem: ecosystemCountExact ?? 0,
       });
 
-      // Load account tags and compute store performance breakdown
-      const { data: dbTags } = await supabase
-        .from('tags')
-        .select('id, name, color')
-        .order('name', { ascending: true });
-
-      if (dbTags) {
-        setTags(dbTags);
-        const storeTags = dbTags.filter((t) => /^Store:\s*/i.test(t.name));
-        if (storeTags.length > 0) {
-          Promise.all(
-            storeTags.map(async (st) => {
-              const [tgtRes, delRes, failRes] = await Promise.all([
-                supabase
-                  .from('broadcast_recipients')
-                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
-                  .eq('broadcast_id', broadcastId)
-                  .eq('contact.contact_tags.tag_id', st.id),
-                supabase
-                  .from('broadcast_recipients')
-                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
-                  .eq('broadcast_id', broadcastId)
-                  .eq('contact.contact_tags.tag_id', st.id)
-                  .in('status', ['delivered', 'read', 'replied']),
-                supabase
-                  .from('broadcast_recipients')
-                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
-                  .eq('broadcast_id', broadcastId)
-                  .eq('contact.contact_tags.tag_id', st.id)
-                  .eq('status', 'failed')
-                  .not('error_message', 'ilike', '%pause%')
-                  .not('error_message', 'ilike', '%132015%'),
-              ]);
-              return {
-                tag_id: st.id,
-                tag_name: st.name.replace(/^Store:\s*/i, ''),
-                color: st.color,
-                targeted: tgtRes.count ?? 0,
-                delivered: delRes.count ?? 0,
-                failed: failRes.count ?? 0,
-              };
-            })
-          ).then((breakdown) => {
-            setStoreBreakdown(breakdown.filter((b) => b.targeted > 0));
+      // Load account tags and compute store performance breakdown (once on mount)
+      if (!tagsLoadedRef.current) {
+        tagsLoadedRef.current = true;
+        supabase
+          .from('tags')
+          .select('id, name, color')
+          .order('name', { ascending: true })
+          .then(async ({ data: dbTags }) => {
+            if (dbTags) {
+              setTags(dbTags);
+              const storeTags = dbTags.filter((t) => /^Store:\s*/i.test(t.name));
+              if (storeTags.length > 0) {
+                const breakdown = await Promise.all(
+                  storeTags.map(async (st) => {
+                    const [tgtRes, delRes, failRes] = await Promise.all([
+                      supabase
+                        .from('broadcast_recipients')
+                        .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                        .eq('broadcast_id', broadcastId)
+                        .eq('contact.contact_tags.tag_id', st.id),
+                      supabase
+                        .from('broadcast_recipients')
+                        .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                        .eq('broadcast_id', broadcastId)
+                        .eq('contact.contact_tags.tag_id', st.id)
+                        .in('status', ['delivered', 'read', 'replied']),
+                      supabase
+                        .from('broadcast_recipients')
+                        .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                        .eq('broadcast_id', broadcastId)
+                        .eq('contact.contact_tags.tag_id', st.id)
+                        .eq('status', 'failed')
+                        .not('error_message', 'ilike', '%pause%')
+                        .not('error_message', 'ilike', '%132015%'),
+                    ]);
+                    return {
+                      tag_id: st.id,
+                      tag_name: st.name.replace(/^Store:\s*/i, ''),
+                      color: st.color,
+                      targeted: tgtRes.count ?? 0,
+                      delivered: delRes.count ?? 0,
+                      failed: failRes.count ?? 0,
+                    };
+                  })
+                );
+                setStoreBreakdown(breakdown.filter((b) => b.targeted > 0));
+              }
+            }
           });
-        }
       }
 
       // 2. Fetch rows for the table matching statusFilter, search, tagFilter, sort, and pagination
@@ -791,8 +796,23 @@ export default function BroadcastDetailPage() {
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-              <span>{t('template', { name: broadcast.template_name })}</span>
-              <span>-</span>
+              {broadcast.template_name ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    router.push(`/broadcasts/template/${encodeURIComponent(broadcast.template_name)}`)
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/10 transition"
+                  title="View consolidated template performance report"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  <span>Template: {broadcast.template_name}</span>
+                  <ExternalLink className="h-3 w-3 opacity-60" />
+                </button>
+              ) : (
+                <span>{t('template', { name: '-' })}</span>
+              )}
+              <span>•</span>
               <span>
                 {t('createdAt', { date: new Date(broadcast.created_at).toLocaleDateString() })}
               </span>
@@ -814,6 +834,22 @@ export default function BroadcastDetailPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {broadcast.template_name && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                router.push(`/broadcasts/template/${encodeURIComponent(broadcast.template_name)}`)
+              }
+              className="border-primary/40 bg-primary/5 text-primary hover:bg-primary/15 hover:border-primary shadow-sm"
+              title="Open consolidated template report across all retry campaigns"
+            >
+              <FileText className="h-3.5 w-3.5 mr-1.5 text-primary" />
+              Template Report
+              <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
+            </Button>
+          )}
+
           {/* Top Retry Dropdown Button */}
           <DropdownMenu>
             <DropdownMenuTrigger

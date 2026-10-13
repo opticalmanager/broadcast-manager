@@ -240,54 +240,45 @@ export async function GET(
       };
     });
 
-    // 5. Store breakdown: map targeted contact_ids to tags
-    const allTargetedContactIds = Array.from(contactHistory.keys());
-    const storeBreakdownMap = new Map<
-      string,
-      { tag_id: string; tag_name: string; color: string; targeted: number; delivered: number; read: number; failed: number }
-    >();
-
+    // 5. Store breakdown: parallel count queries directly via Supabase inner joins
     const storeTags = (dbTags ?? []).filter((t) => t.name.toLowerCase().startsWith('store:'));
-    for (const st of storeTags) {
-      storeBreakdownMap.set(st.id, {
-        tag_id: st.id,
-        tag_name: st.name.replace(/^Store:\s*/i, ''),
-        color: st.color,
-        targeted: 0,
-        delivered: 0,
-        read: 0,
-        failed: 0,
-      });
-    }
+    const storeBreakdown = (
+      await Promise.all(
+        storeTags.map(async (st) => {
+          const [tgtRes, delRes, failRes] = await Promise.all([
+            admin
+              .from('broadcast_recipients')
+              .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+              .in('broadcast_id', bcIds)
+              .eq('contact.contact_tags.tag_id', st.id),
+            admin
+              .from('broadcast_recipients')
+              .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+              .in('broadcast_id', bcIds)
+              .eq('contact.contact_tags.tag_id', st.id)
+              .in('status', ['delivered', 'read', 'replied']),
+            admin
+              .from('broadcast_recipients')
+              .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+              .in('broadcast_id', bcIds)
+              .eq('contact.contact_tags.tag_id', st.id)
+              .eq('status', 'failed')
+              .not('error_message', 'ilike', '%pause%')
+              .not('error_message', 'ilike', '%132015%'),
+          ]);
 
-    // Query contact_tags for these targeted contacts
-    const CHUNK_TAGS = 1000;
-    for (let i = 0; i < allTargetedContactIds.length; i += CHUNK_TAGS) {
-      const chunk = allTargetedContactIds.slice(i, i + CHUNK_TAGS);
-      const { data: ctRows } = await admin
-        .from('contact_tags')
-        .select('contact_id, tag_id')
-        .in('contact_id', chunk);
-
-      for (const ct of ctRows ?? []) {
-        const item = storeBreakdownMap.get(ct.tag_id);
-        const history = contactHistory.get(ct.contact_id);
-        if (item && history) {
-          item.targeted++;
-          if (history.bestStatus === 'delivered' || history.bestStatus === 'read' || history.bestStatus === 'replied') {
-            item.delivered++;
-          }
-          if (history.bestStatus === 'read') {
-            item.read++;
-          }
-          if (history.bestStatus === 'failed') {
-            item.failed++;
-          }
-        }
-      }
-    }
-
-    const storeBreakdown = Array.from(storeBreakdownMap.values()).filter((sb) => sb.targeted > 0);
+          return {
+            tag_id: st.id,
+            tag_name: st.name.replace(/^Store:\s*/i, ''),
+            color: st.color,
+            targeted: tgtRes.count ?? 0,
+            delivered: delRes.count ?? 0,
+            read: 0,
+            failed: failRes.count ?? 0,
+          };
+        })
+      )
+    ).filter((sb) => sb.targeted > 0);
 
     return NextResponse.json({
       template: {
