@@ -46,6 +46,7 @@ import {
   SlidersHorizontal,
   ShieldAlert,
   Ban,
+  Store,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -178,6 +179,18 @@ export default function BroadcastDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<RecipientStatus | 'all'>('all');
+  const [selectedTagId, setSelectedTagId] = useState<string>('all');
+  const [tags, setTags] = useState<Array<{ id: string; name: string; color: string }>>([]);
+  const [storeBreakdown, setStoreBreakdown] = useState<
+    Array<{
+      tag_id: string;
+      tag_name: string;
+      color: string;
+      targeted: number;
+      delivered: number;
+      failed: number;
+    }>
+  >([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortField, setSortField] = useState<'created_at' | 'status' | 'sent_at' | 'delivered_at' | 'read_at' | 'error_message'>('created_at');
@@ -304,11 +317,68 @@ export default function BroadcastDetailPage() {
         ecosystem: ecosystemCountExact ?? 0,
       });
 
-      // 2. Fetch rows for the table matching statusFilter, search, sort, and pagination
-      let recQuery = supabase
-        .from('broadcast_recipients')
-        .select('*, contact:contacts(*)', { count: 'exact' })
-        .eq('broadcast_id', broadcastId);
+      // Load account tags and compute store performance breakdown
+      const { data: dbTags } = await supabase
+        .from('tags')
+        .select('id, name, color')
+        .order('name', { ascending: true });
+
+      if (dbTags) {
+        setTags(dbTags);
+        const storeTags = dbTags.filter((t) => /^Store:\s*/i.test(t.name));
+        if (storeTags.length > 0) {
+          Promise.all(
+            storeTags.map(async (st) => {
+              const [tgtRes, delRes, failRes] = await Promise.all([
+                supabase
+                  .from('broadcast_recipients')
+                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                  .eq('broadcast_id', broadcastId)
+                  .eq('contact.contact_tags.tag_id', st.id),
+                supabase
+                  .from('broadcast_recipients')
+                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                  .eq('broadcast_id', broadcastId)
+                  .eq('contact.contact_tags.tag_id', st.id)
+                  .in('status', ['delivered', 'read', 'replied']),
+                supabase
+                  .from('broadcast_recipients')
+                  .select('id, contact:contacts!inner(contact_tags!inner(tag_id))', { count: 'exact', head: true })
+                  .eq('broadcast_id', broadcastId)
+                  .eq('contact.contact_tags.tag_id', st.id)
+                  .eq('status', 'failed')
+                  .not('error_message', 'ilike', '%pause%')
+                  .not('error_message', 'ilike', '%132015%'),
+              ]);
+              return {
+                tag_id: st.id,
+                tag_name: st.name.replace(/^Store:\s*/i, ''),
+                color: st.color,
+                targeted: tgtRes.count ?? 0,
+                delivered: delRes.count ?? 0,
+                failed: failRes.count ?? 0,
+              };
+            })
+          ).then((breakdown) => {
+            setStoreBreakdown(breakdown.filter((b) => b.targeted > 0));
+          });
+        }
+      }
+
+      // 2. Fetch rows for the table matching statusFilter, search, tagFilter, sort, and pagination
+      let recQuery: any = supabase
+        .from('broadcast_recipients');
+
+      if (selectedTagId !== 'all') {
+        recQuery = recQuery
+          .select('*, contact:contacts!inner(*, contact_tags(tag:tags(id, name, color)))', { count: 'exact' })
+          .eq('contact.contact_tags.tag_id', selectedTagId);
+      } else {
+        recQuery = recQuery
+          .select('*, contact:contacts(*, contact_tags(tag:tags(id, name, color)))', { count: 'exact' });
+      }
+
+      recQuery = recQuery.eq('broadcast_id', broadcastId);
 
       if (statusFilter === 'paused') {
         recQuery = recQuery.or('status.eq.paused,and(status.eq.failed,or(error_message.ilike.%pause%,error_message.ilike.%132015%))');
@@ -357,7 +427,7 @@ export default function BroadcastDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [broadcastId, t, statusFilter, debouncedSearch, sortField, sortOrder, page]);
+  }, [broadcastId, t, statusFilter, selectedTagId, debouncedSearch, sortField, sortOrder, page]);
 
   useEffect(() => {
     fetchData();
@@ -468,10 +538,19 @@ export default function BroadcastDetailPage() {
       let hasMore = true;
 
       while (hasMore) {
-        let query = supabase
-          .from('broadcast_recipients')
-          .select('*, contact:contacts(*)')
-          .eq('broadcast_id', broadcastId);
+        let query: any = supabase
+          .from('broadcast_recipients');
+
+        if (selectedTagId !== 'all') {
+          query = query
+            .select('*, contact:contacts!inner(*, contact_tags(tag:tags(id, name, color)))')
+            .eq('contact.contact_tags.tag_id', selectedTagId);
+        } else {
+          query = query
+            .select('*, contact:contacts(*, contact_tags(tag:tags(id, name, color)))');
+        }
+
+        query = query.eq('broadcast_id', broadcastId);
 
         if (statusFilter === 'paused') {
           query = query.or('status.eq.paused,and(status.eq.failed,or(error_message.ilike.%pause%,error_message.ilike.%132015%))');
@@ -510,23 +589,32 @@ export default function BroadcastDetailPage() {
       const header = [
         t('table.contact'),
         t('table.phone'),
+        'Stores / Tags',
         t('table.status'),
         t('table.sent'),
         t('table.delivered'),
         t('table.read'),
         t('table.error'),
       ];
-      const rows = allRows.map((r) => [
-        r.contact?.name ?? '',
-        r.contact?.phone ?? '',
-        isPausedRecipient(r) || (broadcast.status === 'paused' && r.status === 'pending')
-          ? 'paused'
-          : r.status,
-        r.sent_at ?? '',
-        r.delivered_at ?? '',
-        r.read_at ?? '',
-        r.error_message ?? '',
-      ]);
+      const rows = allRows.map((r: any) => {
+        const storeNames = (r.contact?.contact_tags || [])
+          .map((ct: any) => ct.tag?.name?.replace(/^Store:\s*/i, ''))
+          .filter(Boolean)
+          .join(', ');
+
+        return [
+          r.contact?.name ?? '',
+          r.contact?.phone ?? '',
+          storeNames,
+          isPausedRecipient(r) || (broadcast.status === 'paused' && r.status === 'pending')
+            ? 'paused'
+            : r.status,
+          r.sent_at ?? '',
+          r.delivered_at ?? '',
+          r.read_at ?? '',
+          r.error_message ?? '',
+        ];
+      });
       const csv = toCsv([header, ...rows]);
       const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
       downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
@@ -1058,12 +1146,78 @@ export default function BroadcastDetailPage() {
 
       <FunnelChart steps={funnelSteps} />
 
+      {/* Physical Store Performance Breakdown Card */}
+      {storeBreakdown.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Store className="h-4 w-4 text-primary" />
+              Store-Wise Delivery Performance
+            </h3>
+            <span className="text-xs text-muted-foreground">
+              Click any store to filter recipient table below
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {storeBreakdown.map((s) => {
+              const deliveryPct = s.targeted > 0 ? Math.round((s.delivered / s.targeted) * 100) : 0;
+              const isSelected = selectedTagId === s.tag_id;
+
+              return (
+                <div
+                  key={s.tag_id}
+                  onClick={() => {
+                    setSelectedTagId(isSelected ? 'all' : s.tag_id);
+                    setPage(1);
+                  }}
+                  className={`rounded-lg border p-3 cursor-pointer transition text-xs space-y-1.5 ${
+                    isSelected
+                      ? 'border-primary bg-primary/10 shadow-sm'
+                      : 'border-border/80 bg-background/50 hover:border-primary/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      style={{ color: s.color }}
+                      className="font-bold flex items-center gap-1.5 truncate"
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full shrink-0"
+                        style={{ backgroundColor: s.color }}
+                      />
+                      {s.tag_name}
+                    </span>
+                    <span className="text-muted-foreground text-[10px]">
+                      {deliveryPct}% delivery
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1 text-[11px] text-muted-foreground">
+                    <div>Target: <strong className="text-foreground">{s.targeted.toLocaleString()}</strong></div>
+                    <div>Delivered: <strong className="text-teal-400">{s.delivered.toLocaleString()}</strong></div>
+                    <div>Failed: <strong className="text-red-400">{s.failed.toLocaleString()}</strong></div>
+                  </div>
+
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-1.5 rounded-full"
+                      style={{ width: `${deliveryPct}%`, backgroundColor: s.color }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Recipients Table */}
       <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-3 border-b border-border p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-medium text-foreground">
-              {statusFilter !== 'all' || debouncedSearch.trim()
+              {statusFilter !== 'all' || debouncedSearch.trim() || selectedTagId !== 'all'
                 ? t('recipientsHeader', {
                     filtered: totalFilteredRecipients,
                     total: broadcast.total_recipients,
@@ -1072,6 +1226,27 @@ export default function BroadcastDetailPage() {
             </h2>
 
             <div className="flex flex-wrap items-center gap-2">
+              {/* Store / Tag selector */}
+              {tags.length > 0 && (
+                <div className="flex items-center">
+                  <select
+                    value={selectedTagId}
+                    onChange={(e) => {
+                      setSelectedTagId(e.target.value);
+                      setPage(1);
+                    }}
+                    className="h-8 rounded-lg border border-border bg-background px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="all">🏬 All Stores / Tags</option>
+                    {tags.map((tg) => (
+                      <option key={tg.id} value={tg.id}>
+                        {tg.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
@@ -1157,93 +1332,211 @@ export default function BroadcastDetailPage() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-transparent">
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('created_at')}
+          <>
+            {/* Mobile Recipient Touch Cards (sm:hidden) */}
+            <div className="flex flex-col gap-2.5 p-3 sm:hidden">
+              {recipients.map((recipient) => {
+                const isPaused = isPausedRecipient(recipient);
+                const displayStatus = isPaused ? 'paused' : recipient.status;
+                const rStatus = getRecipientStatus(displayStatus);
+                const contactTags = ((recipient.contact as any)?.contact_tags || [])
+                  .map((ct: any) => ct.tag)
+                  .filter(Boolean);
+
+                return (
+                  <div
+                    key={recipient.id}
+                    className="rounded-lg border border-border bg-background/60 p-3 text-xs space-y-2 transition active:bg-muted/40 shadow-sm"
                   >
-                    {t('table.contact')} {renderSortIcon('created_at')}
-                  </TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.phone')}</TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('status')}
-                  >
-                    {t('table.status')} {renderSortIcon('status')}
-                  </TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('sent_at')}
-                  >
-                    {t('table.sent')} {renderSortIcon('sent_at')}
-                  </TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('delivered_at')}
-                  >
-                    {t('table.delivered')} {renderSortIcon('delivered_at')}
-                  </TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('read_at')}
-                  >
-                    {t('table.read')} {renderSortIcon('read_at')}
-                  </TableHead>
-                  <TableHead
-                    className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
-                    onClick={() => handleSort('error_message')}
-                  >
-                    {t('table.error')} {renderSortIcon('error_message')}
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {recipients.map((recipient) => {
-                  const isPaused = isPausedRecipient(recipient);
-                  const displayStatus = isPaused ? 'paused' : recipient.status;
-                  const rStatus = getRecipientStatus(displayStatus);
-                  return (
-                    <TableRow key={recipient.id} className="border-border">
-                      <TableCell className="font-medium text-foreground">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-foreground truncate pr-2">
                         {recipient.contact?.name ?? 'Unknown'}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {recipient.contact?.phone ?? '-'}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${rStatus.classes}`}
-                        >
-                          {tStatus(rStatus.label)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
+                      </span>
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${rStatus.classes}`}
+                      >
+                        {tStatus(rStatus.label)}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-muted-foreground">
+                      {recipient.contact?.phone ?? '-'}
+                    </div>
+
+                    {/* Store Badges on Mobile */}
+                    {contactTags.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {contactTags.map((t: any) => (
+                          <span
+                            key={t.id}
+                            style={{
+                              backgroundColor: `${t.color}15`,
+                              borderColor: `${t.color}40`,
+                              color: t.color,
+                            }}
+                            className="inline-flex rounded border px-1.5 py-0.5 text-[9px] font-bold"
+                          >
+                            {t.name.replace(/^Store:\s*/i, '')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {recipient.error_message && (
+                      <p className="text-[10px] text-red-400 bg-red-500/5 p-1.5 rounded border border-red-500/15 break-words">
+                        {recipient.error_message}
+                      </p>
+                    )}
+
+                    <div className="grid grid-cols-3 gap-1 pt-1 text-[10px] text-muted-foreground border-t border-border/50">
+                      <div>
+                        <span className="block text-[9px] text-muted-foreground/70">Sent</span>
                         {recipient.sent_at
-                          ? new Date(recipient.sent_at).toLocaleString()
+                          ? new Date(recipient.sent_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
                           : '-'}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
+                      </div>
+                      <div>
+                        <span className="block text-[9px] text-muted-foreground/70">Delivered</span>
                         {recipient.delivered_at
-                          ? new Date(recipient.delivered_at).toLocaleString()
+                          ? new Date(recipient.delivered_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
                           : '-'}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
+                      </div>
+                      <div>
+                        <span className="block text-[9px] text-muted-foreground/70">Read</span>
                         {recipient.read_at
-                          ? new Date(recipient.read_at).toLocaleString()
+                          ? new Date(recipient.read_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
                           : '-'}
-                      </TableCell>
-                      <TableCell className="max-w-xs truncate text-xs text-red-400">
-                        {recipient.error_message ?? '-'}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Desktop Table View (hidden sm:block) */}
+            <div className="overflow-x-auto hidden sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-border hover:bg-transparent">
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('created_at')}
+                    >
+                      {t('table.contact')} {renderSortIcon('created_at')}
+                    </TableHead>
+                    <TableHead className="text-muted-foreground">{t('table.phone')}</TableHead>
+                    <TableHead className="text-muted-foreground">Store / Tags</TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('status')}
+                    >
+                      {t('table.status')} {renderSortIcon('status')}
+                    </TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('sent_at')}
+                    >
+                      {t('table.sent')} {renderSortIcon('sent_at')}
+                    </TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('delivered_at')}
+                    >
+                      {t('table.delivered')} {renderSortIcon('delivered_at')}
+                    </TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('read_at')}
+                    >
+                      {t('table.read')} {renderSortIcon('read_at')}
+                    </TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none text-muted-foreground hover:text-foreground"
+                      onClick={() => handleSort('error_message')}
+                    >
+                      {t('table.error')} {renderSortIcon('error_message')}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {recipients.map((recipient) => {
+                    const isPaused = isPausedRecipient(recipient);
+                    const displayStatus = isPaused ? 'paused' : recipient.status;
+                    const rStatus = getRecipientStatus(displayStatus);
+                    const contactTags = ((recipient.contact as any)?.contact_tags || [])
+                      .map((ct: any) => ct.tag)
+                      .filter(Boolean);
+
+                    return (
+                      <TableRow key={recipient.id} className="border-border">
+                        <TableCell className="font-medium text-foreground">
+                          {recipient.contact?.name ?? 'Unknown'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {recipient.contact?.phone ?? '-'}
+                        </TableCell>
+                        <TableCell>
+                          {contactTags.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 max-w-xs">
+                              {contactTags.map((t: any) => (
+                                <span
+                                  key={t.id}
+                                  style={{
+                                    backgroundColor: `${t.color}15`,
+                                    borderColor: `${t.color}40`,
+                                    color: t.color,
+                                  }}
+                                  className="inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold"
+                                >
+                                  {t.name.replace(/^Store:\s*/i, '')}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/60">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${rStatus.classes}`}
+                          >
+                            {tStatus(rStatus.label)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {recipient.sent_at
+                            ? new Date(recipient.sent_at).toLocaleString()
+                            : '-'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {recipient.delivered_at
+                            ? new Date(recipient.delivered_at).toLocaleString()
+                            : '-'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {recipient.read_at
+                            ? new Date(recipient.read_at).toLocaleString()
+                            : '-'}
+                        </TableCell>
+                        <TableCell className="max-w-xs truncate text-xs text-red-400">
+                          {recipient.error_message ?? '-'}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
 
         {/* Pagination footer */}

@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast, BroadcastStatus } from '@/types';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -13,17 +14,26 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Radio, Plus, Loader2, ChevronRight, FileText, Users } from 'lucide-react';
+import {
+  Radio,
+  Plus,
+  Loader2,
+  ChevronRight,
+  FileText,
+  Users,
+  Search,
+  Sparkles,
+  RotateCcw,
+  CheckCheck,
+  AlertCircle,
+  Eye,
+  ArrowRight,
+} from 'lucide-react';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
 
-/**
- * Poll cadence while any broadcast is sending. Kept modest so we don't
- * beat on Supabase — the aggregate trigger in migration 003 keeps
- * counts consistent; we just need to surface the freshest snapshot.
- */
 const POLL_INTERVAL_MS = 5_000;
 
 function percent(numerator: number, denominator: number): number {
@@ -57,19 +67,49 @@ function RateCell({
   );
 }
 
-export default function BroadcastsPage() {
+export interface TemplateSummaryItem {
+  template_name: string;
+  category: string;
+  language: string;
+  status: string;
+  body_text?: string;
+  campaigns_count: number;
+  latest_campaign_at: string;
+  first_campaign_at: string;
+  total_unique_contacts: number;
+  net_delivered: number;
+  net_read: number;
+  net_failed: number;
+  net_delivery_rate: number;
+  net_read_rate: number;
+  gross_recipients: number;
+  gross_delivered: number;
+  gross_read: number;
+  gross_failed: number;
+}
+
+function BroadcastsContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialView = searchParams.get('view') === 'templates' ? 'templates' : 'campaigns';
+
   const t = useTranslations('Broadcasts.page');
   const tStatus = useTranslations('Broadcasts.status');
   const canCreate = useCan('send-messages');
+
+  const [view, setView] = useState<'campaigns' | 'templates'>(initialView);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Used to kick off polling only while something is actively sending.
+  // Template summaries state
+  const [templateSummaries, setTemplateSummaries] = useState<TemplateSummaryItem[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState('');
+
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  async function fetchBroadcasts() {
+  const fetchBroadcasts = useCallback(async () => {
     try {
       const supabase = createClient();
       const { data, error: fetchError } = await supabase
@@ -102,11 +142,36 @@ export default function BroadcastsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [t]);
+
+  const fetchTemplates = useCallback(async () => {
+    setTemplatesLoading(true);
+    try {
+      const res = await fetch('/api/whatsapp/broadcasts/template-reports');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load template reports');
+      setTemplateSummaries(data.templates ?? []);
+    } catch (err) {
+      console.error('[broadcasts] template summaries error:', err);
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetchBroadcasts();
-  }, []);
+    fetchTemplates();
+  }, [fetchBroadcasts, fetchTemplates]);
+
+  // Keep view in sync if URL query parameter changes
+  useEffect(() => {
+    const v = searchParams.get('view');
+    if (v === 'templates' && view !== 'templates') {
+      setView('templates');
+    } else if (v !== 'templates' && view === 'templates') {
+      setView('campaigns');
+    }
+  }, [searchParams, view]);
 
   const anySending = useMemo(
     () => broadcasts.some((b) => b.status === 'sending'),
@@ -124,9 +189,6 @@ export default function BroadcastsPage() {
       pollTimer.current = null;
     }
 
-    // Pause polling while the tab is hidden — keeps Supabase cold when
-    // the user is away, and ensures a fresh fetch the moment they
-    // refocus so they don't see stale data on return.
     function handleVisibilityChange() {
       if (!anySending) return;
       if (document.visibilityState === 'hidden') {
@@ -147,7 +209,46 @@ export default function BroadcastsPage() {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [anySending]);
+  }, [anySending, fetchBroadcasts]);
+
+  // Filter templates by search
+  const filteredTemplates = useMemo(() => {
+    if (!templateSearch.trim()) return templateSummaries;
+    const q = templateSearch.toLowerCase().trim();
+    return templateSummaries.filter(
+      (t) =>
+        t.template_name.toLowerCase().includes(q) ||
+        t.category.toLowerCase().includes(q)
+    );
+  }, [templateSummaries, templateSearch]);
+
+  // Aggregate stats across all templates
+  const templateMetrics = useMemo(() => {
+    let totalUniqueContacts = 0;
+    let totalNetDelivered = 0;
+    let totalPermanentFailed = 0;
+    let totalRuns = 0;
+
+    for (const t of templateSummaries) {
+      totalUniqueContacts += t.total_unique_contacts;
+      totalNetDelivered += t.net_delivered;
+      totalPermanentFailed += t.net_failed;
+      totalRuns += t.campaigns_count;
+    }
+
+    const avgNetDelivery = totalUniqueContacts > 0
+      ? Math.round((totalNetDelivered / totalUniqueContacts) * 100)
+      : 0;
+
+    return {
+      templatesCount: templateSummaries.length,
+      totalUniqueContacts,
+      totalNetDelivered,
+      totalPermanentFailed,
+      totalRuns,
+      avgNetDelivery,
+    };
+  }, [templateSummaries]);
 
   if (loading) {
     return (
@@ -169,9 +270,8 @@ export default function BroadcastsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Top indeterminate progress bar: only visible while a broadcast
-          is mid-send. Pure CSS animation so no extra deps. */}
+    <div className="space-y-5 sm:space-y-6">
+      {/* Top indeterminate progress bar during live send */}
       {anySending && (
         <div
           role="progressbar"
@@ -183,25 +283,23 @@ export default function BroadcastsPage() {
             .broadcast-indeterminate-bar {
               width: 33%;
               transform: translateX(-100%);
-              animation: broadcast-slide 1.6s cubic-bezier(0.4, 0, 0.2, 1)
-                infinite;
+              animation: broadcast-slide 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
             }
             @keyframes broadcast-slide {
-              0% {
-                transform: translateX(-100%);
-              }
-              100% {
-                transform: translateX(400%);
-              }
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(400%); }
             }
           `}</style>
         </div>
       )}
 
-      <div className="flex items-center justify-between">
+      {/* Header & Primary Actions */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+            {t('title')}
+          </h1>
+          <p className="mt-0.5 sm:mt-1 text-xs sm:text-sm text-muted-foreground">
             {t('subtitle')}
           </p>
         </div>
@@ -209,157 +307,313 @@ export default function BroadcastsPage() {
           canAct={canCreate}
           gateReason="create broadcasts"
           onClick={() => router.push('/broadcasts/new')}
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
+          className="w-full sm:w-auto h-9 bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-semibold"
         >
           <Plus className="h-4 w-4" />
           {t('newBroadcast')}
         </GatedButton>
       </div>
 
-      {broadcasts.length === 0 ? (
-        <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-border bg-card">
-          <Radio className="mb-3 h-10 w-10 text-muted-foreground" />
-          <p className="text-sm font-medium text-foreground">{t('noBroadcastsYet')}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('createFirst')}
-          </p>
-          <GatedButton
-            canAct={canCreate}
-            gateReason="create broadcasts"
-            onClick={() => router.push('/broadcasts/new')}
-            className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="h-4 w-4" />
-            {t('newBroadcast')}
-          </GatedButton>
-        </div>
-      ) : (
-        <>
-          {/* Mobile touch cards (sm:hidden) */}
-          <div className="flex flex-col gap-3 sm:hidden">
-            {broadcasts.map((broadcast) => {
-              const status = getBroadcastStatus(broadcast.status);
-              const deliveredPct = percent(broadcast.delivered_count, broadcast.total_recipients);
-              const readPct = percent(broadcast.read_count, broadcast.total_recipients);
+      {/* Segmented View Switcher (Mobile-native touch feel) */}
+      <div className="flex items-center gap-1 rounded-xl border border-border bg-muted/50 p-1 text-xs">
+        <button
+          type="button"
+          onClick={() => {
+            setView('campaigns');
+            router.replace('/broadcasts');
+          }}
+          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3 py-2 sm:py-1.5 font-semibold transition ${
+            view === 'campaigns'
+              ? 'bg-card text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Radio className="h-3.5 w-3.5" />
+          Campaigns ({broadcasts.length})
+        </button>
 
-              return (
-                <div
-                  key={broadcast.id}
-                  onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
-                  className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 active:bg-muted/40 cursor-pointer shadow-sm"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <h2 className="truncate text-base font-semibold text-foreground">
-                        {broadcast.name}
-                      </h2>
-                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <FileText className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">{broadcast.template_name}</span>
-                      </div>
-                    </div>
-                    <span
-                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}
-                    >
-                      {status.pulse && (
-                        <span className="relative flex h-1.5 w-1.5">
-                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-yellow-400 opacity-75" />
-                          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-yellow-400" />
-                        </span>
-                      )}
-                      {tStatus(status.label)}
-                    </span>
-                  </div>
+        <button
+          type="button"
+          onClick={() => {
+            setView('templates');
+            router.replace('/broadcasts?view=templates');
+          }}
+          className={`flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg px-3 py-2 sm:py-1.5 font-semibold transition ${
+            view === 'templates'
+              ? 'bg-card text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          By Template ({templateSummaries.length})
+        </button>
+      </div>
 
-                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-2 text-xs">
-                    <div>
-                      <span className="text-muted-foreground">{t('table.delivery')}: </span>
-                      <span className="font-medium text-foreground">{deliveredPct}%</span>
-                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-1.5 rounded-full bg-primary"
-                          style={{ width: `${deliveredPct}%` }}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">{t('table.read')}: </span>
-                      <span className="font-medium text-foreground">{readPct}%</span>
-                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-1.5 rounded-full bg-blue-500"
-                          style={{ width: `${readPct}%` }}
-                        />
-                      </div>
-                    </div>
-                  </div>
+      {/* ============================================================
+          VIEW 1: BY TEMPLATE ROLLUP
+         ============================================================ */}
+      {view === 'templates' ? (
+        <div className="space-y-4">
+          {/* Quick Metrics Header */}
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="rounded-xl border border-border bg-card p-3 sm:p-3.5 shadow-sm">
+              <span className="text-[11px] text-muted-foreground">Templates Used</span>
+              <p className="mt-1 text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+                {templateMetrics.templatesCount}
+              </p>
+              <span className="text-[10px] text-muted-foreground">{templateMetrics.totalRuns} total runs</span>
+            </div>
 
-                  <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <Users className="h-3.5 w-3.5" />
-                      <span>{t('table.recipients')}: <strong className="text-foreground font-medium">{broadcast.total_recipients}</strong></span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span>{new Date(broadcast.created_at).toLocaleDateString()}</span>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            <div className="rounded-xl border border-border bg-card p-3 sm:p-3.5 shadow-sm">
+              <span className="text-[11px] text-muted-foreground">Unique Audience</span>
+              <p className="mt-1 text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+                {templateMetrics.totalUniqueContacts.toLocaleString()}
+              </p>
+              <span className="text-[10px] text-muted-foreground">Deduplicated contacts</span>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-3 sm:p-3.5 shadow-sm">
+              <span className="text-[11px] text-muted-foreground">Net Delivered</span>
+              <p className="mt-1 text-xl sm:text-2xl font-bold tracking-tight text-teal-400">
+                {templateMetrics.avgNetDelivery}%
+              </p>
+              <span className="text-[10px] text-muted-foreground">{templateMetrics.totalNetDelivered.toLocaleString()} reached</span>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-3 sm:p-3.5 shadow-sm">
+              <span className="text-[11px] text-muted-foreground">Permanent Failed</span>
+              <p className="mt-1 text-xl sm:text-2xl font-bold tracking-tight text-red-400">
+                {templateMetrics.totalPermanentFailed.toLocaleString()}
+              </p>
+              <span className="text-[10px] text-muted-foreground">Across all retries</span>
+            </div>
           </div>
 
-          {/* Desktop Table (hidden sm:block) */}
-          <div className="hidden overflow-x-auto rounded-xl border border-border bg-card sm:block">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-transparent">
-                  <TableHead className="text-muted-foreground">{t('table.name')}</TableHead>
-                  <TableHead className="hidden text-muted-foreground md:table-cell">{t('table.template')}</TableHead>
-                  <TableHead className="hidden text-right text-muted-foreground sm:table-cell">
-                    {t('table.recipients')}
-                  </TableHead>
-                  <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.delivery')}</TableHead>
-                  <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.read')}</TableHead>
-                  <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
-                  <TableHead className="hidden text-muted-foreground sm:table-cell">{t('table.date')}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+          {/* Search bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Search templates..."
+              value={templateSearch}
+              onChange={(e) => setTemplateSearch(e.target.value)}
+              className="h-9 pl-8 text-xs border-border bg-card"
+            />
+          </div>
+
+          {templatesLoading ? (
+            <div className="flex h-48 items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : filteredTemplates.length === 0 ? (
+            <div className="flex h-56 flex-col items-center justify-center rounded-xl border border-border bg-card p-6 text-center">
+              <FileText className="mb-2 h-8 w-8 text-muted-foreground" />
+              <p className="text-sm font-semibold text-foreground">No template broadcast data yet</p>
+              <p className="mt-1 text-xs text-muted-foreground max-w-sm">
+                When you launch broadcasts or retry campaigns with templates, their consolidated de-duplicated reports will appear here.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Mobile Touch Cards for Templates (sm:hidden) */}
+              <div className="flex flex-col gap-3 sm:hidden">
+                {filteredTemplates.map((tpl) => (
+                  <div
+                    key={tpl.template_name}
+                    onClick={() =>
+                      router.push(`/broadcasts/template/${encodeURIComponent(tpl.template_name)}`)
+                    }
+                    className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition active:bg-muted/40 cursor-pointer shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h2 className="text-sm font-bold text-foreground truncate">
+                            {tpl.template_name}
+                          </h2>
+                          <span className="inline-flex rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.2 text-[10px] font-semibold text-primary">
+                            {tpl.category}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'run' : 'runs (Initial + Retries)'}
+                        </p>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-2 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">Net Delivery: </span>
+                        <span className="font-semibold text-foreground">{tpl.net_delivery_rate}%</span>
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-1.5 rounded-full bg-teal-500"
+                            style={{ width: `${tpl.net_delivery_rate}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Net Read: </span>
+                        <span className="font-semibold text-foreground">{tpl.net_read_rate}%</span>
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-1.5 rounded-full bg-blue-500"
+                            style={{ width: `${tpl.net_read_rate}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground border-t border-border/50">
+                      <div className="flex items-center gap-1.5">
+                        <Users className="h-3.5 w-3.5 text-primary" />
+                        <span>Unique Contacts: <strong className="text-foreground">{tpl.total_unique_contacts.toLocaleString()}</strong></span>
+                      </div>
+                      {tpl.net_failed > 0 && (
+                        <span className="text-red-400 font-medium text-[11px]">
+                          {tpl.net_failed} failed
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop Table for Templates (hidden sm:block) */}
+              <div className="hidden overflow-x-auto rounded-xl border border-border bg-card sm:block shadow-sm">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="text-muted-foreground">Template</TableHead>
+                      <TableHead className="text-muted-foreground">Runs Chain</TableHead>
+                      <TableHead className="text-right text-muted-foreground">Unique Audience</TableHead>
+                      <TableHead className="text-muted-foreground">Net Delivery</TableHead>
+                      <TableHead className="text-muted-foreground">Net Read</TableHead>
+                      <TableHead className="text-right text-muted-foreground">Net Failed</TableHead>
+                      <TableHead className="text-right text-muted-foreground">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredTemplates.map((tpl) => (
+                      <TableRow
+                        key={tpl.template_name}
+                        className="cursor-pointer border-border hover:bg-muted/40 transition"
+                        onClick={() =>
+                          router.push(`/broadcasts/template/${encodeURIComponent(tpl.template_name)}`)
+                        }
+                      >
+                        <TableCell className="font-medium text-foreground">
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-primary shrink-0" />
+                            <div>
+                              <p className="font-semibold">{tpl.template_name}</p>
+                              <span className="text-[11px] text-muted-foreground">{tpl.category} • {tpl.language}</span>
+                            </div>
+                          </div>
+                        </TableCell>
+
+                        <TableCell>
+                          <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs font-medium bg-muted text-foreground">
+                            {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'Run' : 'Runs'}
+                          </span>
+                        </TableCell>
+
+                        <TableCell className="text-right tabular-nums font-semibold text-foreground">
+                          {tpl.total_unique_contacts.toLocaleString()}
+                        </TableCell>
+
+                        <TableCell>
+                          <RateCell
+                            value={tpl.net_delivered}
+                            total={tpl.total_unique_contacts}
+                            color="bg-teal-500"
+                          />
+                        </TableCell>
+
+                        <TableCell>
+                          <RateCell
+                            value={tpl.net_read}
+                            total={tpl.total_unique_contacts}
+                            color="bg-blue-500"
+                          />
+                        </TableCell>
+
+                        <TableCell className="text-right tabular-nums">
+                          {tpl.net_failed > 0 ? (
+                            <span className="font-semibold text-red-400">
+                              {tpl.net_failed.toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">0</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 text-xs text-primary hover:text-primary/90"
+                          >
+                            View Report <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        /* ============================================================
+            VIEW 2: BY CAMPAIGN (Existing Broadcasts List)
+           ============================================================ */
+        <>
+          {broadcasts.length === 0 ? (
+            <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-border bg-card">
+              <Radio className="mb-3 h-10 w-10 text-muted-foreground" />
+              <p className="text-sm font-medium text-foreground">{t('noBroadcastsYet')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('createFirst')}
+              </p>
+              <GatedButton
+                canAct={canCreate}
+                gateReason="create broadcasts"
+                onClick={() => router.push('/broadcasts/new')}
+                className="mt-4 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                <Plus className="h-4 w-4" />
+                {t('newBroadcast')}
+              </GatedButton>
+            </div>
+          ) : (
+            <>
+              {/* Mobile touch cards (sm:hidden) */}
+              <div className="flex flex-col gap-3 sm:hidden">
                 {broadcasts.map((broadcast) => {
                   const status = getBroadcastStatus(broadcast.status);
+                  const deliveredPct = percent(broadcast.delivered_count, broadcast.total_recipients);
+                  const readPct = percent(broadcast.read_count, broadcast.total_recipients);
+
                   return (
-                    <TableRow
+                    <div
                       key={broadcast.id}
-                      className="cursor-pointer border-border hover:bg-muted/50"
                       onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                      className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition-colors hover:border-primary/40 active:bg-muted/40 cursor-pointer shadow-sm"
                     >
-                      <TableCell className="font-medium text-foreground">
-                        {broadcast.name}
-                      </TableCell>
-                      <TableCell className="hidden text-muted-foreground md:table-cell">
-                        {broadcast.template_name}
-                      </TableCell>
-                      <TableCell className="hidden text-right text-muted-foreground tabular-nums sm:table-cell">
-                        {broadcast.total_recipients}
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        <RateCell
-                          value={broadcast.delivered_count}
-                          total={broadcast.total_recipients}
-                          color="bg-primary"
-                        />
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        <RateCell
-                          value={broadcast.read_count}
-                          total={broadcast.total_recipients}
-                          color="bg-blue-500"
-                        />
-                      </TableCell>
-                      <TableCell>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <h2 className="truncate text-base font-semibold text-foreground">
+                            {broadcast.name}
+                          </h2>
+                          <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <FileText className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{broadcast.template_name}</span>
+                          </div>
+                        </div>
                         <span
-                          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}
+                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}
                         >
                           {status.pulse && (
                             <span className="relative flex h-1.5 w-1.5">
@@ -369,18 +623,136 @@ export default function BroadcastsPage() {
                           )}
                           {tStatus(status.label)}
                         </span>
-                      </TableCell>
-                      <TableCell className="hidden text-muted-foreground sm:table-cell">
-                        {new Date(broadcast.created_at).toLocaleDateString()}
-                      </TableCell>
-                    </TableRow>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-2 text-xs">
+                        <div>
+                          <span className="text-muted-foreground">{t('table.delivery')}: </span>
+                          <span className="font-medium text-foreground">{deliveredPct}%</span>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-1.5 rounded-full bg-primary"
+                              style={{ width: `${deliveredPct}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">{t('table.read')}: </span>
+                          <span className="font-medium text-foreground">{readPct}%</span>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-1.5 rounded-full bg-blue-500"
+                              style={{ width: `${readPct}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-1">
+                          <Users className="h-3.5 w-3.5" />
+                          <span>
+                            {t('table.recipients')}: <strong className="text-foreground font-medium">{broadcast.total_recipients}</strong>
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span>{new Date(broadcast.created_at).toLocaleDateString()}</span>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                      </div>
+                    </div>
                   );
                 })}
-              </TableBody>
-            </Table>
-          </div>
+              </div>
+
+              {/* Desktop Table (hidden sm:block) */}
+              <div className="hidden overflow-x-auto rounded-xl border border-border bg-card sm:block shadow-sm">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="text-muted-foreground">{t('table.name')}</TableHead>
+                      <TableHead className="hidden text-muted-foreground md:table-cell">{t('table.template')}</TableHead>
+                      <TableHead className="hidden text-right text-muted-foreground sm:table-cell">
+                        {t('table.recipients')}
+                      </TableHead>
+                      <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.delivery')}</TableHead>
+                      <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.read')}</TableHead>
+                      <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
+                      <TableHead className="hidden text-muted-foreground sm:table-cell">{t('table.date')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {broadcasts.map((broadcast) => {
+                      const status = getBroadcastStatus(broadcast.status);
+                      return (
+                        <TableRow
+                          key={broadcast.id}
+                          className="cursor-pointer border-border hover:bg-muted/50 transition"
+                          onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                        >
+                          <TableCell className="font-medium text-foreground">
+                            {broadcast.name}
+                          </TableCell>
+                          <TableCell className="hidden text-muted-foreground md:table-cell">
+                            {broadcast.template_name}
+                          </TableCell>
+                          <TableCell className="hidden text-right text-muted-foreground tabular-nums sm:table-cell">
+                            {broadcast.total_recipients}
+                          </TableCell>
+                          <TableCell className="hidden lg:table-cell">
+                            <RateCell
+                              value={broadcast.delivered_count}
+                              total={broadcast.total_recipients}
+                              color="bg-primary"
+                            />
+                          </TableCell>
+                          <TableCell className="hidden lg:table-cell">
+                            <RateCell
+                              value={broadcast.read_count}
+                              total={broadcast.total_recipients}
+                              color="bg-blue-500"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}
+                            >
+                              {status.pulse && (
+                                <span className="relative flex h-1.5 w-1.5">
+                                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-yellow-400 opacity-75" />
+                                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-yellow-400" />
+                                </span>
+                              )}
+                              {tStatus(status.label)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="hidden text-muted-foreground sm:table-cell">
+                            {new Date(broadcast.created_at).toLocaleDateString()}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
+  );
+}
+
+export default function BroadcastsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <BroadcastsContent />
+    </Suspense>
   );
 }
