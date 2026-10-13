@@ -318,7 +318,7 @@ export default function TemplateReportDetailPage() {
         window.location.origin
       );
       url.searchParams.set('page', '1');
-      url.searchParams.set('pageSize', '5000');
+      url.searchParams.set('pageSize', '10000');
       if (statusFilter !== 'all') url.searchParams.set('status', statusFilter);
       if (storeFilter !== 'all') url.searchParams.set('tagId', storeFilter);
       if (debouncedSearch) url.searchParams.set('search', debouncedSearch);
@@ -871,6 +871,7 @@ export default function TemplateReportDetailPage() {
               {(['all', 'delivered', 'read', 'failed'] as const).map((st) => (
                 <button
                   key={st}
+                  type="button"
                   onClick={() => {
                     setStatusFilter(st);
                     setPage(1);
@@ -885,6 +886,42 @@ export default function TemplateReportDetailPage() {
                 </button>
               ))}
             </div>
+
+            {/* Export Filtered CSV Button directly in toolbar */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportCsv}
+              disabled={exporting}
+              className="h-8 text-xs border-border bg-background hover:bg-muted font-medium text-foreground shrink-0 shadow-xs"
+              title="Export contacts matching current store and status filters"
+            >
+              {exporting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+              ) : (
+                <Download className="h-3.5 w-3.5 mr-1.5 text-primary" />
+              )}
+              Export CSV
+            </Button>
+
+            {/* Reset Filters button if any filter is active */}
+            {(storeFilter !== 'all' || statusFilter !== 'all' || searchQuery) && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setStoreFilter('all');
+                  setStatusFilter('all');
+                  setSearchQuery('');
+                  setPage(1);
+                }}
+                className="h-8 text-xs text-muted-foreground hover:text-foreground shrink-0"
+              >
+                Reset
+              </Button>
+            )}
           </div>
         </div>
 

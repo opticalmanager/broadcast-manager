@@ -58,7 +58,6 @@ export async function GET() {
         read_count,
         replied_count,
         failed_count,
-        paused_count,
         status,
         created_at
       `)

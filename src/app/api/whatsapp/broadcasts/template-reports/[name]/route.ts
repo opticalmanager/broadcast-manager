@@ -42,7 +42,6 @@ export async function GET(
         read_count,
         replied_count,
         failed_count,
-        paused_count,
         status,
         created_at
       `)
@@ -233,7 +232,7 @@ export async function GET(
         delivered_count: b.delivered_count ?? 0,
         read_count: b.read_count ?? 0,
         failed_count: b.failed_count ?? 0,
-        paused_count: b.paused_count ?? 0,
+        paused_count: 0,
         created_at: b.created_at,
         is_retry: Boolean(audFilter?.retry_of_broadcast_id),
         retry_of_broadcast_id: audFilter?.retry_of_broadcast_id || null,

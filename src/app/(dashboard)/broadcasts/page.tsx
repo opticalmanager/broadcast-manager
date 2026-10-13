@@ -28,6 +28,8 @@ import {
   AlertCircle,
   Eye,
   ArrowRight,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
@@ -106,6 +108,7 @@ function BroadcastsContent() {
   const [templateSummaries, setTemplateSummaries] = useState<TemplateSummaryItem[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templateSearch, setTemplateSearch] = useState('');
+  const [templateViewMode, setTemplateViewMode] = useState<'cards' | 'table'>('cards');
 
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -119,19 +122,31 @@ function BroadcastsContent() {
 
       if (fetchError) throw fetchError;
 
+      const now = Date.now();
       const items = (data ?? []).map((b) => {
-        if (
-          b.status === 'sending' &&
-          b.total_recipients > 0 &&
-          (b.sent_count ?? 0) + (b.failed_count ?? 0) >= b.total_recipients
-        ) {
-          const resolvedStatus = (b.failed_count ?? 0) === b.total_recipients ? 'failed' : 'sent';
-          supabase
-            .from('broadcasts')
-            .update({ status: resolvedStatus, updated_at: new Date().toISOString() })
-            .eq('id', b.id)
-            .then(() => {});
-          return { ...b, status: resolvedStatus as BroadcastStatus };
+        if (b.status === 'sending') {
+          const total = b.total_recipients ?? 0;
+          const sent = b.sent_count ?? 0;
+          const failed = b.failed_count ?? 0;
+          const delivered = b.delivered_count ?? 0;
+          const lastActivity = new Date(b.updated_at || b.created_at).getTime();
+          const inactiveMinutes = (now - lastActivity) / (60 * 1000);
+
+          const isStuck =
+            (total > 0 && sent + failed >= total) ||
+            (total > 0 && (sent + failed) / total >= 0.98 && inactiveMinutes > 3) ||
+            inactiveMinutes > 15;
+
+          if (isStuck) {
+            const resolvedStatus: BroadcastStatus =
+              sent > 0 || delivered > 0 ? 'sent' : 'failed';
+            supabase
+              .from('broadcasts')
+              .update({ status: resolvedStatus, updated_at: new Date().toISOString() })
+              .eq('id', b.id)
+              .then(() => {});
+            return { ...b, status: resolvedStatus };
+          }
         }
         return b;
       });
@@ -417,15 +432,47 @@ function BroadcastsContent() {
             </div>
           </div>
 
-          {/* Search bar */}
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              placeholder="Search templates..."
-              value={templateSearch}
-              onChange={(e) => setTemplateSearch(e.target.value)}
-              className="h-9 pl-8 text-xs border-border bg-card"
-            />
+          {/* Search bar & View mode toggle */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search templates by name or category..."
+                value={templateSearch}
+                onChange={(e) => setTemplateSearch(e.target.value)}
+                className="h-9 pl-8 text-xs border-border bg-card"
+              />
+            </div>
+            <div className="hidden sm:flex items-center rounded-lg border border-border bg-card p-0.5 shrink-0">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setTemplateViewMode('cards')}
+                className={`h-7 px-2.5 text-xs gap-1.5 ${
+                  templateViewMode === 'cards'
+                    ? 'bg-muted font-semibold text-foreground shadow-xs'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Cards
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setTemplateViewMode('table')}
+                className={`h-7 px-2.5 text-xs gap-1.5 ${
+                  templateViewMode === 'table'
+                    ? 'bg-muted font-semibold text-foreground shadow-xs'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <List className="h-3.5 w-3.5" />
+                Table
+              </Button>
+            </div>
           </div>
 
           {templatesLoading ? (
@@ -442,154 +489,212 @@ function BroadcastsContent() {
             </div>
           ) : (
             <>
-              {/* Mobile Touch Cards for Templates (sm:hidden) */}
-              <div className="flex flex-col gap-3 sm:hidden">
+              {/* CARDS GRID (Always on mobile, and on desktop when templateViewMode === 'cards') */}
+              <div
+                className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 ${
+                  templateViewMode === 'table' ? 'sm:hidden' : ''
+                }`}
+              >
                 {filteredTemplates.map((tpl) => (
                   <div
                     key={tpl.template_name}
                     onClick={() =>
                       router.push(`/broadcasts/template/${encodeURIComponent(tpl.template_name)}`)
                     }
-                    className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-4 transition active:bg-muted/40 cursor-pointer shadow-sm"
+                    className="group flex flex-col justify-between rounded-xl border border-border bg-card p-4 transition-all duration-200 hover:border-primary/50 hover:shadow-md cursor-pointer active:scale-[0.99]"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <h2 className="text-sm font-bold text-foreground truncate">
-                            {tpl.template_name}
-                          </h2>
-                          <span className="inline-flex rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.2 text-[10px] font-semibold text-primary">
-                            {tpl.category}
+                    <div className="space-y-3">
+                      {/* Top Header */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <div className="rounded-lg bg-primary/10 p-2 text-primary shrink-0 mt-0.5">
+                            <FileText className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-sm text-foreground group-hover:text-primary transition truncate">
+                              {tpl.template_name}
+                            </h3>
+                            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                              <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                {tpl.category}
+                              </span>
+                              <span className="rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                {tpl.language}
+                              </span>
+                              <span className="rounded-full border border-teal-500/20 bg-teal-500/10 px-1.5 py-0.5 text-[10px] font-medium text-teal-400">
+                                {tpl.status}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition shrink-0 mt-1" />
+                      </div>
+
+                      {/* Runs count and date */}
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground border-y border-border/40 py-1.5">
+                        <span className="flex items-center gap-1 font-medium text-foreground">
+                          <RotateCcw className="h-3 w-3 text-primary" />
+                          {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'Campaign Run' : 'Runs (Retry Chain)'}
+                        </span>
+                        <span>
+                          {tpl.latest_campaign_at ? new Date(tpl.latest_campaign_at).toLocaleDateString() : ''}
+                        </span>
+                      </div>
+
+                      {/* Key Delivery & Read Progress */}
+                      <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/30 p-2.5 text-xs">
+                        <div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-muted-foreground">Net Delivery</span>
+                            <span className="font-semibold text-teal-400">{tpl.net_delivery_rate}%</span>
+                          </div>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-1.5 rounded-full bg-teal-500"
+                              style={{ width: `${tpl.net_delivery_rate}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-muted-foreground mt-0.5 block truncate">
+                            {tpl.net_delivered.toLocaleString()} delivered
                           </span>
                         </div>
-                        <p className="mt-0.5 text-[11px] text-muted-foreground">
-                          {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'run' : 'runs (Initial + Retries)'}
-                        </p>
-                      </div>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 mt-1" />
-                    </div>
 
-                    <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/40 p-2 text-xs">
-                      <div>
-                        <span className="text-muted-foreground">Net Delivery: </span>
-                        <span className="font-semibold text-foreground">{tpl.net_delivery_rate}%</span>
-                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-1.5 rounded-full bg-teal-500"
-                            style={{ width: `${tpl.net_delivery_rate}%` }}
-                          />
+                        <div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-muted-foreground">Net Read</span>
+                            <span className="font-semibold text-blue-400">{tpl.net_read_rate}%</span>
+                          </div>
+                          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-1.5 rounded-full bg-blue-500"
+                              style={{ width: `${tpl.net_read_rate}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-muted-foreground mt-0.5 block truncate">
+                            {tpl.net_read.toLocaleString()} read
+                          </span>
                         </div>
                       </div>
-                      <div>
-                        <span className="text-muted-foreground">Net Read: </span>
-                        <span className="font-semibold text-foreground">{tpl.net_read_rate}%</span>
-                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-1.5 rounded-full bg-blue-500"
-                            style={{ width: `${tpl.net_read_rate}%` }}
-                          />
+
+                      {/* Audience summary */}
+                      <div className="flex items-center justify-between text-xs pt-0.5">
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <Users className="h-3.5 w-3.5 text-primary shrink-0" />
+                          <span className="truncate">Audience: <strong className="text-foreground">{tpl.total_unique_contacts.toLocaleString()}</strong></span>
                         </div>
+                        {tpl.net_failed > 0 ? (
+                          <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[11px] font-semibold text-red-400 shrink-0">
+                            {tpl.net_failed.toLocaleString()} failed
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-teal-400 shrink-0">
+                            ✓ 100% Resolved
+                          </span>
+                        )}
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground border-t border-border/50">
-                      <div className="flex items-center gap-1.5">
-                        <Users className="h-3.5 w-3.5 text-primary" />
-                        <span>Unique Contacts: <strong className="text-foreground">{tpl.total_unique_contacts.toLocaleString()}</strong></span>
-                      </div>
-                      {tpl.net_failed > 0 && (
-                        <span className="text-red-400 font-medium text-[11px]">
-                          {tpl.net_failed} failed
-                        </span>
-                      )}
+                    {/* Action button footer */}
+                    <div className="mt-3.5 pt-2.5 border-t border-border/50">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-between h-9 text-xs font-medium text-primary border-primary/20 group-hover:bg-primary group-hover:text-primary-foreground group-hover:border-primary transition"
+                      >
+                        <span>Open Report & Store Analytics</span>
+                        <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                      </Button>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Desktop Table for Templates (hidden sm:block) */}
-              <div className="hidden overflow-x-auto rounded-xl border border-border bg-card sm:block shadow-sm">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-border hover:bg-transparent">
-                      <TableHead className="text-muted-foreground">Template</TableHead>
-                      <TableHead className="text-muted-foreground">Runs Chain</TableHead>
-                      <TableHead className="text-right text-muted-foreground">Unique Audience</TableHead>
-                      <TableHead className="text-muted-foreground">Net Delivery</TableHead>
-                      <TableHead className="text-muted-foreground">Net Read</TableHead>
-                      <TableHead className="text-right text-muted-foreground">Net Failed</TableHead>
-                      <TableHead className="text-right text-muted-foreground">Action</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredTemplates.map((tpl) => (
-                      <TableRow
-                        key={tpl.template_name}
-                        className="cursor-pointer border-border hover:bg-muted/40 transition"
-                        onClick={() =>
-                          router.push(`/broadcasts/template/${encodeURIComponent(tpl.template_name)}`)
-                        }
-                      >
-                        <TableCell className="font-medium text-foreground">
-                          <div className="flex items-center gap-2">
-                            <FileText className="h-4 w-4 text-primary shrink-0" />
-                            <div>
-                              <p className="font-semibold">{tpl.template_name}</p>
-                              <span className="text-[11px] text-muted-foreground">{tpl.category} • {tpl.language}</span>
-                            </div>
-                          </div>
-                        </TableCell>
-
-                        <TableCell>
-                          <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs font-medium bg-muted text-foreground">
-                            {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'Run' : 'Runs'}
-                          </span>
-                        </TableCell>
-
-                        <TableCell className="text-right tabular-nums font-semibold text-foreground">
-                          {tpl.total_unique_contacts.toLocaleString()}
-                        </TableCell>
-
-                        <TableCell>
-                          <RateCell
-                            value={tpl.net_delivered}
-                            total={tpl.total_unique_contacts}
-                            color="bg-teal-500"
-                          />
-                        </TableCell>
-
-                        <TableCell>
-                          <RateCell
-                            value={tpl.net_read}
-                            total={tpl.total_unique_contacts}
-                            color="bg-blue-500"
-                          />
-                        </TableCell>
-
-                        <TableCell className="text-right tabular-nums">
-                          {tpl.net_failed > 0 ? (
-                            <span className="font-semibold text-red-400">
-                              {tpl.net_failed.toLocaleString()}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">0</span>
-                          )}
-                        </TableCell>
-
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 text-xs text-primary hover:text-primary/90"
-                          >
-                            View Report <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                          </Button>
-                        </TableCell>
+              {/* TABLE VIEW (Desktop only when templateViewMode === 'table') */}
+              {templateViewMode === 'table' && (
+                <div className="hidden overflow-x-auto rounded-xl border border-border bg-card sm:block shadow-sm">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-muted-foreground">Template</TableHead>
+                        <TableHead className="text-muted-foreground">Runs Chain</TableHead>
+                        <TableHead className="text-right text-muted-foreground">Unique Audience</TableHead>
+                        <TableHead className="text-muted-foreground">Net Delivery</TableHead>
+                        <TableHead className="text-muted-foreground">Net Read</TableHead>
+                        <TableHead className="text-right text-muted-foreground">Net Failed</TableHead>
+                        <TableHead className="text-right text-muted-foreground">Action</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredTemplates.map((tpl) => (
+                        <TableRow
+                          key={tpl.template_name}
+                          className="cursor-pointer border-border hover:bg-muted/40 transition"
+                          onClick={() =>
+                            router.push(`/broadcasts/template/${encodeURIComponent(tpl.template_name)}`)
+                          }
+                        >
+                          <TableCell className="font-medium text-foreground">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-primary shrink-0" />
+                              <div>
+                                <p className="font-semibold">{tpl.template_name}</p>
+                                <span className="text-[11px] text-muted-foreground">{tpl.category} • {tpl.language}</span>
+                              </div>
+                            </div>
+                          </TableCell>
+
+                          <TableCell>
+                            <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs font-medium bg-muted text-foreground">
+                              {tpl.campaigns_count} {tpl.campaigns_count === 1 ? 'Run' : 'Runs'}
+                            </span>
+                          </TableCell>
+
+                          <TableCell className="text-right tabular-nums font-semibold text-foreground">
+                            {tpl.total_unique_contacts.toLocaleString()}
+                          </TableCell>
+
+                          <TableCell>
+                            <RateCell
+                              value={tpl.net_delivered}
+                              total={tpl.total_unique_contacts}
+                              color="bg-teal-500"
+                            />
+                          </TableCell>
+
+                          <TableCell>
+                            <RateCell
+                              value={tpl.net_read}
+                              total={tpl.total_unique_contacts}
+                              color="bg-blue-500"
+                            />
+                          </TableCell>
+
+                          <TableCell className="text-right tabular-nums">
+                            {tpl.net_failed > 0 ? (
+                              <span className="font-semibold text-red-400">
+                                {tpl.net_failed.toLocaleString()}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">0</span>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 text-xs text-primary hover:text-primary/90"
+                            >
+                              View Report <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </>
           )}
         </div>

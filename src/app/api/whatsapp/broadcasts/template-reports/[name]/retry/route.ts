@@ -170,7 +170,6 @@ export async function POST(
         read_count: 0,
         replied_count: 0,
         failed_count: 0,
-        paused_count: 0,
       })
       .select('id, name')
       .single();
