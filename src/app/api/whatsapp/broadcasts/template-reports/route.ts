@@ -15,6 +15,7 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
+import { getTemplateAudienceDossier } from '@/lib/broadcasts/template-audience-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -99,54 +100,37 @@ export async function GET() {
       });
     }
 
-    // 4. For each template group, aggregate net metrics and gross metrics
+    // 4. For each template group, aggregate net metrics and gross metrics using the deduplicated engine
     const results: TemplateSummaryItem[] = [];
 
     for (const [tplName, bcs] of templateGroups.entries()) {
-      const bcIds = bcs.map((b) => b.id);
       const meta = metaMap.get(tplName);
+      const dossier = await getTemplateAudienceDossier(accountId, tplName);
 
-      let grossRecipients = 0;
-      let grossDelivered = 0;
-      let grossRead = 0;
-      let grossFailed = 0;
+      const totalUniqueContacts = dossier.stats.total_unique_contacts;
+      const netDelivered = dossier.stats.net_delivered;
+      const netRead = dossier.stats.net_read;
+      const netFailed = dossier.stats.net_failed;
 
-      for (const b of bcs) {
-        grossRecipients += b.total_recipients ?? 0;
-        grossDelivered += b.delivered_count ?? 0;
-        grossRead += b.read_count ?? 0;
-        grossFailed += b.failed_count ?? 0;
-      }
+      const netDeliveryRate =
+        totalUniqueContacts > 0
+          ? Math.round((netDelivered / totalUniqueContacts) * 100)
+          : 0;
 
-      // Aggregate summary metrics directly from campaigns for instantaneous performance
-      const sortedByRecipients = [...bcs].sort(
-        (a, b) => (b.total_recipients ?? 0) - (a.total_recipients ?? 0)
-      );
-      const rootBc = sortedByRecipients[0];
-      const totalUniqueContacts = rootBc?.total_recipients ?? 0;
-
-      // Net outcomes across retry chains
-      const netDelivered = Math.min(totalUniqueContacts, grossDelivered);
-      const netRead = Math.min(totalUniqueContacts, grossRead);
-      const netFailed = Math.max(0, totalUniqueContacts - netDelivered);
-
-      const netDeliveryRate = totalUniqueContacts > 0
-        ? Math.round((netDelivered / totalUniqueContacts) * 100)
-        : 0;
-
-      const netReadRate = totalUniqueContacts > 0
-        ? Math.round((netRead / totalUniqueContacts) * 100)
-        : 0;
+      const netReadRate =
+        totalUniqueContacts > 0
+          ? Math.round((netRead / totalUniqueContacts) * 100)
+          : 0;
 
       const latestCampaignAt = bcs[0]?.created_at ?? '';
       const firstCampaignAt = bcs[bcs.length - 1]?.created_at ?? '';
 
       results.push({
         template_name: tplName,
-        category: meta?.category ?? 'Marketing',
-        language: meta?.language ?? bcs[0]?.template_language ?? 'en_US',
-        status: meta?.status ?? 'APPROVED',
-        body_text: meta?.body_text,
+        category: meta?.category ?? dossier.templateMeta.category ?? 'Marketing',
+        language: meta?.language ?? dossier.templateMeta.language ?? 'en_US',
+        status: meta?.status ?? dossier.templateMeta.status ?? 'APPROVED',
+        body_text: meta?.body_text ?? dossier.templateMeta.body_text,
         campaigns_count: bcs.length,
         latest_campaign_at: latestCampaignAt,
         first_campaign_at: firstCampaignAt,
@@ -156,10 +140,10 @@ export async function GET() {
         net_failed: netFailed,
         net_delivery_rate: netDeliveryRate,
         net_read_rate: netReadRate,
-        gross_recipients: grossRecipients,
-        gross_delivered: grossDelivered,
-        gross_read: grossRead,
-        gross_failed: grossFailed,
+        gross_recipients: dossier.stats.gross_recipients,
+        gross_delivered: dossier.stats.gross_delivered,
+        gross_read: dossier.stats.gross_read,
+        gross_failed: dossier.stats.gross_failed,
       });
     }
 
