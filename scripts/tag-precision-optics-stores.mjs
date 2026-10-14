@@ -36,7 +36,7 @@ const STORES = [
   {
     name: 'Store: Store 104',
     color: '#8b5cf6', // Violet
-    filePath: 'D:\\Downloads\\104 - 104.csv',
+    filePath: 'D:\\Downloads\\104new info.csv',
   },
   {
     name: 'Store: Spectrum Mall',

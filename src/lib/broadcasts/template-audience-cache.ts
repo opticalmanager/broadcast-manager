@@ -13,7 +13,7 @@
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 
 export interface ContactNetHistory {
-  bestStatus: 'sent' | 'delivered' | 'read' | 'replied' | 'failed' | 'paused';
+  bestStatus: 'sent' | 'delivered' | 'read' | 'replied' | 'failed' | 'paused' | 'pending';
   attemptsCount: number;
   lastError?: string | null;
   lastAttemptAt: string;
@@ -24,10 +24,12 @@ export interface TagBreakdownItem {
   tag_name: string;
   color: string;
   targeted: number;
+  sent: number;
   delivered: number;
   read: number;
   replied: number;
   failed: number;
+  pending: number;
 }
 
 export interface TemplateAudienceDossier {
@@ -66,6 +68,7 @@ export interface TemplateAudienceDossier {
     net_read: number;
     net_replied: number;
     net_failed: number;
+    net_pending: number;
     gross_recipients: number;
     gross_delivered: number;
     gross_read: number;
@@ -320,7 +323,19 @@ async function computeTemplateAudienceDossier(
         }
       }
 
+      const STATUS_PRIORITY: Record<string, number> = {
+        replied: 50,
+        read: 40,
+        delivered: 30,
+        sent: 20,
+        failed: 10,
+        paused: 5,
+        pending: 1,
+      };
+
       const existing = contactHistory.get(r.contact_id);
+      const rPriority = STATUS_PRIORITY[r.status] ?? 0;
+
       if (!existing) {
         contactHistory.set(r.contact_id, {
           bestStatus: r.status as ContactNetHistory['bestStatus'],
@@ -335,23 +350,8 @@ async function computeTemplateAudienceDossier(
           if (r.error_message) existing.lastError = r.error_message;
         }
 
-        if (r.status === 'replied') {
-          existing.bestStatus = 'replied';
-        } else if (r.status === 'read' && existing.bestStatus !== 'replied') {
-          existing.bestStatus = 'read';
-        } else if (r.status === 'delivered' && existing.bestStatus !== 'read' && existing.bestStatus !== 'replied') {
-          existing.bestStatus = 'delivered';
-        } else if (
-          r.status === 'sent' &&
-          existing.bestStatus !== 'read' &&
-          existing.bestStatus !== 'replied' &&
-          existing.bestStatus !== 'delivered'
-        ) {
-          existing.bestStatus = 'sent';
-        } else if (
-          existing.bestStatus === 'failed' &&
-          r.status !== 'failed'
-        ) {
+        const existingPriority = STATUS_PRIORITY[existing.bestStatus] ?? 0;
+        if (rPriority > existingPriority) {
           existing.bestStatus = r.status as ContactNetHistory['bestStatus'];
         }
       }
@@ -365,6 +365,7 @@ async function computeTemplateAudienceDossier(
   let netRead = 0;
   let netReplied = 0;
   let netFailed = 0;
+  let netPending = 0;
 
   for (const h of contactHistory.values()) {
     if (
@@ -386,6 +387,9 @@ async function computeTemplateAudienceDossier(
     }
     if (h.bestStatus === 'failed') {
       netFailed++;
+    }
+    if (h.bestStatus === 'pending') {
+      netPending++;
     }
   }
 
@@ -474,10 +478,12 @@ async function computeTemplateAudienceDossier(
     const contactIdsForTag = tagContactMap.get(t.id) ?? new Set<string>();
 
     let tagTargeted = 0;
+    let tagSent = 0;
     let tagDelivered = 0;
     let tagRead = 0;
     let tagReplied = 0;
     let tagFailed = 0;
+    let tagPending = 0;
 
     for (const cid of contactIdsForTag) {
       const ch = contactHistory.get(cid);
@@ -488,13 +494,20 @@ async function computeTemplateAudienceDossier(
         tagReplied++;
         tagRead++;
         tagDelivered++;
+        tagSent++;
       } else if (ch.bestStatus === 'read') {
         tagRead++;
         tagDelivered++;
+        tagSent++;
       } else if (ch.bestStatus === 'delivered') {
         tagDelivered++;
+        tagSent++;
+      } else if (ch.bestStatus === 'sent') {
+        tagSent++;
       } else if (ch.bestStatus === 'failed') {
         tagFailed++;
+      } else if (ch.bestStatus === 'pending') {
+        tagPending++;
       }
     }
 
@@ -504,10 +517,12 @@ async function computeTemplateAudienceDossier(
         tag_name: t.name.replace(/^Store:\s*/i, ''),
         color: t.color || '#3b82f6',
         targeted: tagTargeted,
+        sent: tagSent,
         delivered: tagDelivered,
         read: tagRead,
         replied: tagReplied,
         failed: tagFailed,
+        pending: tagPending,
       });
     }
   }
@@ -536,6 +551,7 @@ async function computeTemplateAudienceDossier(
       net_read: netRead,
       net_replied: netReplied,
       net_failed: netFailed,
+      net_pending: netPending,
       gross_recipients: grossRecipients,
       gross_delivered: grossDelivered,
       gross_read: grossRead,

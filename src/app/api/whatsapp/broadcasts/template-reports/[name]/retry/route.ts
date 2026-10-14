@@ -91,21 +91,26 @@ export async function POST(
           contactLatestParams.set(r.contact_id, r.template_params);
         }
 
+        const STATUS_PRIORITY: Record<string, number> = {
+          replied: 50,
+          read: 40,
+          delivered: 30,
+          sent: 20,
+          failed: 10,
+          paused: 5,
+          pending: 1,
+        };
+
         const currentBest = contactBestStatus.get(r.contact_id);
+        const rPriority = STATUS_PRIORITY[r.status] ?? 0;
+
         if (!currentBest) {
           contactBestStatus.set(r.contact_id, r.status);
-        } else if (r.status === 'read') {
-          contactBestStatus.set(r.contact_id, 'read');
-        } else if (r.status === 'delivered' && currentBest !== 'read') {
-          contactBestStatus.set(r.contact_id, 'delivered');
-        } else if (
-          r.status === 'sent' &&
-          currentBest !== 'read' &&
-          currentBest !== 'delivered'
-        ) {
-          contactBestStatus.set(r.contact_id, 'sent');
-        } else if (currentBest === 'failed' && r.status !== 'failed') {
-          contactBestStatus.set(r.contact_id, r.status);
+        } else {
+          const currentPriority = STATUS_PRIORITY[currentBest] ?? 0;
+          if (rPriority > currentPriority) {
+            contactBestStatus.set(r.contact_id, r.status);
+          }
         }
       }
 
@@ -120,7 +125,7 @@ export async function POST(
     // (i.e. they NEVER achieved delivered or read status in any run)
     const candidateContactIds: string[] = [];
     for (const [cid, st] of contactBestStatus.entries()) {
-      if (st === 'failed' || st === 'paused') {
+      if (st === 'failed' || st === 'paused' || st === 'pending') {
         candidateContactIds.push(cid);
       }
     }

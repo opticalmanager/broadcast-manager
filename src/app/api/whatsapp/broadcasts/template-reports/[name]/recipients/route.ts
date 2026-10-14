@@ -21,7 +21,7 @@ interface ContactNetRow {
   name: string;
   phone: string;
   avatar_url?: string | null;
-  net_status: 'read' | 'delivered' | 'sent' | 'replied' | 'failed' | 'paused';
+  net_status: 'read' | 'delivered' | 'sent' | 'replied' | 'failed' | 'paused' | 'pending';
   attempts_count: number;
   last_error_message?: string | null;
   last_attempt_at: string;
@@ -65,6 +65,14 @@ export async function GET(
       contactIds = contactIds.filter((cid) => {
         const item = contactHistory.get(cid);
         if (!item) return false;
+        if (statusFilter === 'sent') {
+          return (
+            item.bestStatus === 'sent' ||
+            item.bestStatus === 'delivered' ||
+            item.bestStatus === 'read' ||
+            item.bestStatus === 'replied'
+          );
+        }
         if (statusFilter === 'delivered') {
           return item.bestStatus === 'delivered' || item.bestStatus === 'read' || item.bestStatus === 'replied';
         }

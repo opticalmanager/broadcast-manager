@@ -55,6 +55,7 @@ interface TemplateDossier {
     net_read: number;
     net_replied: number;
     net_failed: number;
+    net_pending?: number;
     gross_recipients: number;
     gross_delivered: number;
     gross_read: number;
@@ -89,10 +90,12 @@ interface TemplateDossier {
     tag_name: string;
     color: string;
     targeted: number;
+    sent: number;
     delivered: number;
     read: number;
     replied: number;
     failed: number;
+    pending?: number;
   }>;
 }
 
@@ -101,7 +104,7 @@ interface RecipientItem {
   name: string;
   phone: string;
   avatar_url?: string | null;
-  net_status: 'read' | 'delivered' | 'sent' | 'replied' | 'failed' | 'paused';
+  net_status: 'read' | 'delivered' | 'sent' | 'replied' | 'failed' | 'paused' | 'pending';
   attempts_count: number;
   last_error_message?: string | null;
   last_attempt_at: string;
@@ -209,7 +212,7 @@ export default function TemplateReportDetailPage() {
   // Recipients pagination & filters
   const [recipients, setRecipients] = useState<RecipientItem[]>([]);
   const [recipientsLoading, setRecipientsLoading] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'delivered' | 'read' | 'replied' | 'failed'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed'>('all');
   const [storeFilter, setStoreFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -381,11 +384,12 @@ export default function TemplateReportDetailPage() {
   const displayStats = activeTagItem
     ? {
         total_unique_contacts: activeTagItem.targeted,
-        net_sent: activeTagItem.targeted,
+        net_sent: activeTagItem.sent,
         net_delivered: activeTagItem.delivered,
         net_read: activeTagItem.read,
         net_replied: activeTagItem.replied ?? 0,
         net_failed: activeTagItem.failed,
+        net_pending: activeTagItem.pending ?? 0,
         gross_recipients: activeTagItem.targeted,
       }
     : stats;
@@ -607,78 +611,6 @@ export default function TemplateReportDetailPage() {
         />
       </div>
 
-      {/* Segment / Store Performance Breakdown Card (Multi-Tenant Aware) */}
-      {store_breakdown && store_breakdown.length > 0 && (
-        <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              {is_store_tags ? (
-                <Store className="h-4 w-4 text-primary" />
-              ) : (
-                <Users className="h-4 w-4 text-primary" />
-              )}
-              {is_store_tags
-                ? 'Store-Wise Delivery Performance'
-                : 'Audience Segment & Tag Breakdown'}
-            </h3>
-            <span className="text-xs text-muted-foreground">
-              Click any {is_store_tags ? 'store' : 'segment'} to filter upper KPIs and contact list below
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            {store_breakdown.map((s) => {
-              const deliveryPct = s.targeted > 0 ? Math.round((s.delivered / s.targeted) * 100) : 0;
-              const isSelected = storeFilter === s.tag_id;
-
-              return (
-                <div
-                  key={s.tag_id}
-                  onClick={() => {
-                    setStoreFilter(isSelected ? 'all' : s.tag_id);
-                    setPage(1);
-                  }}
-                  className={`rounded-lg border p-3 cursor-pointer transition text-xs space-y-1.5 ${
-                    isSelected
-                      ? 'border-primary bg-primary/10 shadow-sm ring-1 ring-primary'
-                      : 'border-border/80 bg-background/50 hover:border-primary/40'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span
-                      style={{ color: s.color }}
-                      className="font-bold flex items-center gap-1.5 truncate"
-                    >
-                      <span
-                        className="h-2 w-2 rounded-full shrink-0"
-                        style={{ backgroundColor: s.color }}
-                      />
-                      {s.tag_name}
-                    </span>
-                    <span className="text-muted-foreground text-[10px]">
-                      {deliveryPct}% delivery
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-1 text-[11px] text-muted-foreground">
-                    <div>Target: <strong className="text-foreground">{s.targeted.toLocaleString()}</strong></div>
-                    <div>Deliv: <strong className="text-teal-400">{s.delivered.toLocaleString()}</strong></div>
-                    <div>Replied: <strong className="text-indigo-400">{(s.replied ?? 0).toLocaleString()}</strong></div>
-                    <div>Failed: <strong className="text-red-400">{s.failed.toLocaleString()}</strong></div>
-                  </div>
-
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                    <div
-                      className="h-1.5 rounded-full"
-                      style={{ width: `${deliveryPct}%`, backgroundColor: s.color }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Visual Funnel Chart & Diagnostics Grid */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -961,7 +893,7 @@ export default function TemplateReportDetailPage() {
 
             {/* Filter Tabs */}
             <div className="flex items-center rounded-lg bg-muted p-0.5 text-xs overflow-x-auto scrollbar-none max-w-full">
-              {(['all', 'delivered', 'read', 'replied', 'failed'] as const).map((st) => (
+              {(['all', 'sent', 'delivered', 'read', 'replied', 'failed'] as const).map((st) => (
                 <button
                   key={st}
                   type="button"
@@ -1041,6 +973,10 @@ export default function TemplateReportDetailPage() {
                     ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
                     : r.net_status === 'delivered'
                     ? 'border-teal-500/30 bg-teal-500/10 text-teal-400'
+                    : r.net_status === 'sent'
+                    ? 'border-sky-500/30 bg-sky-500/10 text-sky-400'
+                    : r.net_status === 'pending'
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
                     : 'border-red-500/30 bg-red-500/10 text-red-400';
 
                 return (
@@ -1128,6 +1064,10 @@ export default function TemplateReportDetailPage() {
                         ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
                         : r.net_status === 'delivered'
                         ? 'border-teal-500/30 bg-teal-500/10 text-teal-400'
+                        : r.net_status === 'sent'
+                        ? 'border-sky-500/30 bg-sky-500/10 text-sky-400'
+                        : r.net_status === 'pending'
+                        ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
                         : 'border-red-500/30 bg-red-500/10 text-red-400';
 
                     return (
