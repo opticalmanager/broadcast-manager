@@ -181,13 +181,8 @@ async function main() {
   }
 
   if (dbPassword && projectRef) {
-    // Try standard Supabase direct pooler URL formats
-    const poolerUrl = `postgresql://postgres.${projectRef}:${encodeURIComponent(dbPassword)}@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`;
-    // Also try direct db url
-    const directUrl = `postgresql://postgres:${encodeURIComponent(dbPassword)}@db.${projectRef}.supabase.co:5432/postgres`;
-    
-    // Default to direct connection string
-    connectionString = directUrl;
+    const poolerUrl = `postgresql://postgres.${projectRef}:${encodeURIComponent(dbPassword)}@aws-0-ap-south-1.pooler.supabase.com:5432/postgres`;
+    connectionString = poolerUrl;
   }
 
   if (connectionString) {
