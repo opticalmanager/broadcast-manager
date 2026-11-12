@@ -14,6 +14,8 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -42,6 +44,15 @@ type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 // POST /api/whatsapp/config so the obvious paste mistakes get a named
 // field before a round-trip.
 const META_ID_RE = /^\d+$/;
+
+function generateRandomVerifyToken(): string {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+}
 
 // `meta` object the config route attaches to every failed Meta call
 // (issue #505): what a user quotes to Meta support.
@@ -101,6 +112,11 @@ export function WhatsAppConfig() {
 
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [appSecret, setAppSecret] = useState('');
+  const [hasAppSecret, setHasAppSecret] = useState(false);
+  const [showAppSecret, setShowAppSecret] = useState(false);
+  const [secretCleared, setSecretCleared] = useState(false);
   const [accessToken, setAccessToken] = useState('');
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
@@ -163,6 +179,10 @@ export function WhatsAppConfig() {
         setConfig(data);
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
+        setAppId(data.app_id || '');
+        setHasAppSecret(Boolean(data.app_secret));
+        setAppSecret('');
+        setSecretCleared(false);
         setAccessToken(MASKED_TOKEN);
         setPin('');
         setTokenEdited(false);
@@ -173,8 +193,13 @@ export function WhatsAppConfig() {
         setConfig(null);
         setPhoneNumberId('');
         setWabaId('');
+        setAppId('');
+        setAppSecret('');
+        setHasAppSecret(false);
+        setSecretCleared(false);
         setAccessToken('');
-        setVerifyToken('');
+        // Auto-fill random 32-character verify token for fresh configuration
+        setVerifyToken(generateRandomVerifyToken());
         setPin('');
         setTokenEdited(false);
         setMirrorMedia(true);
@@ -190,6 +215,15 @@ export function WhatsAppConfig() {
 
           if (payload.verify_token) {
             setVerifyToken(payload.verify_token);
+          } else {
+            setVerifyToken(generateRandomVerifyToken());
+          }
+
+          if (payload.app_id) {
+            setAppId(payload.app_id);
+          }
+          if (typeof payload.has_app_secret === 'boolean') {
+            setHasAppSecret(payload.has_app_secret);
           }
 
           if (payload.connected) {
@@ -285,6 +319,10 @@ export function WhatsAppConfig() {
       toast.error(t('wabaIdNotNumeric'));
       return;
     }
+    if (appId.trim() && !META_ID_RE.test(appId.trim())) {
+      toast.error(t('appIdNotNumeric'));
+      return;
+    }
     if (!config && (!accessToken.trim() || !tokenEdited)) {
       toast.error(t('accessTokenRequired'));
       return;
@@ -300,6 +338,7 @@ export function WhatsAppConfig() {
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
+        app_id: appId.trim() || null,
         verify_token: verifyToken.trim() || null,
         // Optional — only sent when the user filled it in. The server
         // requires it on first save or when changing numbers; for a
@@ -309,14 +348,12 @@ export function WhatsAppConfig() {
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error(t('reenterAccessToken'));
-        setSaving(false);
-        return;
+      }
+
+      if (secretCleared) {
+        payload.app_secret = null;
+      } else if (appSecret.trim()) {
+        payload.app_secret = appSecret.trim();
       }
 
       const res = await fetch('/api/whatsapp/config', {
@@ -479,8 +516,14 @@ export function WhatsAppConfig() {
       setConfig(null);
       setPhoneNumberId('');
       setWabaId('');
+      setAppId('');
+      setAppSecret('');
+      setHasAppSecret(false);
+      setShowAppSecret(false);
+      setSecretCleared(false);
       setAccessToken('');
-      setVerifyToken('');
+      setVerifyToken(generateRandomVerifyToken());
+      setPin('');
       setTokenEdited(false);
       setConnectionStatus('disconnected');
       setResetReason(null);
@@ -632,16 +675,18 @@ export function WhatsAppConfig() {
             <p
               className={
                 'mt-1 text-xs ' +
-                (wabaSubscription.subscribed === false
+                (wabaSubscription.subscribed === false || wabaSubscription.app_id_match === false
                   ? 'text-amber-300'
                   : 'text-muted-foreground')
               }
             >
               {wabaSubscription.subscribed === false
                 ? t('wabaNotSubscribed')
-                : wabaSubscription.subscribed === true
-                  ? t('wabaSubscribed')
-                  : wabaSubscription.error}
+                : wabaSubscription.app_id_match === false
+                  ? t('wabaAppIdMismatch')
+                  : wabaSubscription.subscribed === true
+                    ? t('wabaSubscribed')
+                    : wabaSubscription.error}
             </p>
           )}
           {connectionStatus !== 'connected' && statusMeta && renderMetaDetails(statusMeta)}
@@ -765,7 +810,7 @@ export function WhatsAppConfig() {
                 placeholder={t('phoneNumberIdPlaceholder')}
                 value={phoneNumberId}
                 onChange={(e) => setPhoneNumberId(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground min-h-[44px]"
               />
             </div>
 
@@ -775,8 +820,80 @@ export function WhatsAppConfig() {
                 placeholder={t('wabaIdPlaceholder')}
                 value={wabaId}
                 onChange={(e) => setWabaId(e.target.value)}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground min-h-[44px]"
               />
+            </div>
+
+            {/* Meta App ID */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-muted-foreground">{t('metaAppId')}</Label>
+                <span className="text-xs text-muted-foreground">{t('optional')}</span>
+              </div>
+              <Input
+                placeholder={t('metaAppIdPlaceholder')}
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground min-h-[44px]"
+              />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('metaAppIdHint')}
+              </p>
+            </div>
+
+            {/* Meta App Secret */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between flex-wrap gap-1">
+                <Label className="text-muted-foreground">{t('metaAppSecret')}</Label>
+                {hasAppSecret && !secretCleared && (
+                  <div className="inline-flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-800/40">
+                      <ShieldCheck className="size-3.5" />
+                      {t('appSecretConfigured')}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSecretCleared(true);
+                        setHasAppSecret(false);
+                        setAppSecret('');
+                      }}
+                      className="text-xs text-muted-foreground hover:text-red-400 font-medium inline-flex items-center gap-1 transition-colors min-h-[32px] px-1.5 cursor-pointer"
+                      title={t('removeSecret')}
+                    >
+                      <Trash2 className="size-3" />
+                      {t('removeSecret')}
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <Input
+                  type={showAppSecret ? 'text' : 'password'}
+                  placeholder={
+                    hasAppSecret && !secretCleared
+                      ? t('metaAppSecretPlaceholderConfigured')
+                      : t('metaAppSecretPlaceholder')
+                  }
+                  value={appSecret}
+                  onChange={(e) => {
+                    setAppSecret(e.target.value);
+                    if (secretCleared) setSecretCleared(false);
+                  }}
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-12 min-h-[44px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAppSecret(!showAppSecret)}
+                  aria-label={showAppSecret ? 'Hide secret' : 'Show secret'}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-md"
+                >
+                  {showAppSecret ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('metaAppSecretHint')}
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -796,12 +913,13 @@ export function WhatsAppConfig() {
                       setTokenEdited(true);
                     }
                   }}
-                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-10"
+                  className="bg-muted border-border text-foreground placeholder:text-muted-foreground pr-12 min-h-[44px]"
                 />
                 <button
                   type="button"
                   onClick={() => setShowToken(!showToken)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={showToken ? 'Hide token' : 'Show token'}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-md"
                 >
                   {showToken ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                 </button>
@@ -819,9 +937,9 @@ export function WhatsAppConfig() {
                 <button
                   type="button"
                   onClick={handleGenerateVerifyToken}
-                  className="text-xs text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1 cursor-pointer transition-colors"
+                  className="text-xs text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors min-h-[44px] px-2"
                 >
-                  <Sparkles className="size-3" />
+                  <Sparkles className="size-3.5" />
                   {t('generateVerifyToken')}
                 </button>
               </div>
@@ -830,7 +948,7 @@ export function WhatsAppConfig() {
                   placeholder={t('webhookVerifyTokenPlaceholder')}
                   value={verifyToken}
                   onChange={(e) => setVerifyToken(e.target.value)}
-                  className={`bg-muted border-border text-foreground placeholder:text-muted-foreground ${verifyToken ? 'pr-10' : ''}`}
+                  className={`bg-muted border-border text-foreground placeholder:text-muted-foreground min-h-[44px] ${verifyToken ? 'pr-12' : ''}`}
                 />
                 {verifyToken && (
                   <button
@@ -840,7 +958,8 @@ export function WhatsAppConfig() {
                       toast.success(t('verifyTokenCopied'));
                     }}
                     title={t('verifyTokenCopied')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-1"
+                    aria-label={t('verifyTokenCopied')}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-md"
                   >
                     <Copy className="size-4" />
                   </button>
@@ -865,7 +984,7 @@ export function WhatsAppConfig() {
                 onChange={(e) =>
                   setPin(e.target.value.replace(/\D/g, '').slice(0, 6))
                 }
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground tracking-widest"
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground tracking-widest min-h-[44px]"
               />
               <p className="text-xs text-muted-foreground leading-relaxed">
                 <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />

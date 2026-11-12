@@ -1689,7 +1689,18 @@
       "phoneNumberIdNotNumeric": "전화번호 ID는 숫자만 포함해야 합니다. 전화번호가 아닌, Meta → WhatsApp → API 설정에 표시된 숫자 ID를 복사하세요.",
       "wabaIdNotNumeric": "WhatsApp 비즈니스 계정 ID는 숫자만 포함해야 합니다. Meta → WhatsApp → API 설정에서 복사하세요.",
       "wabaSubscribed": "WhatsApp 비즈니스 계정이 이 앱에 구독되어 있어 수신 웹훅을 받을 수 있습니다.",
-      "wabaNotSubscribed": "WhatsApp 비즈니스 계정이 이 앱에 구독되어 있지 않아 Meta가 수신 웹훅을 전달하지 않습니다. 액세스 토큰을 다시 입력하고 저장해 구독하세요."
+      "wabaNotSubscribed": "WhatsApp 비즈니스 계정이 이 앱에 구독되어 있지 않아 Meta가 수신 웹훅을 전달하지 않습니다. 액세스 토큰을 다시 입력하고 저장해 구독하세요.",
+      "wabaAppIdMismatch": "WhatsApp 비즈니스 계정이 다른 Meta 앱에 구독되어 있습니다. 이 Meta 앱 ID로 구독하려면 설정을 다시 저장하세요.",
+      "metaAppId": "Meta 앱 ID",
+      "metaAppIdPlaceholder": "예: 4160791244052881",
+      "metaAppIdHint": "Meta for Developers → 앱 설정 → 기본의 숫자 ID입니다. 미디어 템플릿 업로드에 필요합니다.",
+      "appIdNotNumeric": "Meta 앱 ID는 숫자만 포함해야 합니다.",
+      "metaAppSecret": "Meta 앱 시크릿",
+      "metaAppSecretPlaceholder": "Meta 앱 시크릿 입력",
+      "metaAppSecretPlaceholderConfigured": "•••••••••••••••••••••••••••••••• (변경하지 않으려면 비워 두세요)",
+      "metaAppSecretHint": "Meta for Developers → 앱 설정 → 기본의 앱 시크릿입니다. 수신 웹훅 서명을 확인하는 데 사용됩니다.",
+      "appSecretConfigured": "구성됨 (암호화됨)",
+      "removeSecret": "제거"
     },
     "sections": {
       "overview": "개요",

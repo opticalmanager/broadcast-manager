@@ -1689,7 +1689,18 @@
       "phoneNumberIdNotNumeric": "Phone Number ID must contain only digits. Copy the numeric id from Meta → WhatsApp → API Setup, not the phone number itself.",
       "wabaIdNotNumeric": "WhatsApp Business Account ID must contain only digits. Copy it from Meta → WhatsApp → API Setup.",
       "wabaSubscribed": "The WhatsApp Business Account is subscribed to this app — inbound webhooks can be delivered.",
-      "wabaNotSubscribed": "The WhatsApp Business Account is not subscribed to this app, so Meta will not deliver inbound webhooks. Re-enter the access token and save again to subscribe it."
+      "wabaNotSubscribed": "The WhatsApp Business Account is not subscribed to this app, so Meta will not deliver inbound webhooks. Re-enter the access token and save again to subscribe it.",
+      "wabaAppIdMismatch": "The WhatsApp Business Account is subscribed to a different Meta App. Re-save your configuration to subscribe it to this Meta App ID.",
+      "metaAppId": "Meta App ID",
+      "metaAppIdPlaceholder": "e.g. 4160791244052881",
+      "metaAppIdHint": "Numeric ID from Meta for Developers → App Settings → Basic. Required for media template uploads.",
+      "appIdNotNumeric": "Meta App ID must contain only digits.",
+      "metaAppSecret": "Meta App Secret",
+      "metaAppSecretPlaceholder": "Enter Meta App Secret",
+      "metaAppSecretPlaceholderConfigured": "•••••••••••••••••••••••••••••••• (leave blank to keep unchanged)",
+      "metaAppSecretHint": "App Secret from Meta for Developers → App Settings → Basic. Used to verify inbound webhook signatures.",
+      "appSecretConfigured": "Configured (encrypted)",
+      "removeSecret": "Remove"
     },
     "sections": {
       "overview": "Overview",

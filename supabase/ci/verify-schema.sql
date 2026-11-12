@@ -75,6 +75,16 @@ BEGIN
       'messages.error_code/error_title/error_details are missing — migration 042 did not apply';
   END IF;
 
+  -- Migration 045: Meta App credentials on whatsapp_config
+  IF (
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'whatsapp_config'
+      AND column_name IN ('app_id', 'app_secret')
+  ) <> 2 THEN
+    RAISE EXCEPTION
+      'whatsapp_config.app_id/app_secret are missing — migration 045 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

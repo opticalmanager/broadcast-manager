@@ -183,9 +183,9 @@ If the server cannot reach `graph.facebook.com` at all:
 4. Confirm the webhook itself: in the Meta App → WhatsApp →
    Configuration, the callback URL must be `https://<your host>/api/whatsapp/webhook`,
    the verify token must match the one saved here, and the `messages`
-   field must be subscribed. `META_APP_SECRET` in the server
-   environment must be *that* app's secret, or every delivery is
-   rejected with a 401 before wacrm looks at it.
+   field must be subscribed. The Meta App Secret configured under Settings →
+   WhatsApp Connection must be *that* app's secret, or deliveries will be
+   rejected with a 401.
 
 ## Where the mapping lives
 

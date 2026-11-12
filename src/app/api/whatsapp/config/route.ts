@@ -21,6 +21,7 @@ import {
   phoneNumberBelongsToWaba,
 } from '@/lib/whatsapp/waba-pairing'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { invalidateWebhookAppSecretsCache } from '@/lib/whatsapp/webhook-signature'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -137,7 +138,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, waba_id, access_token, verify_token, status')
+      .select('*')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -182,6 +183,8 @@ export async function GET() {
           reason: 'token_corrupted',
           needs_reset: true,
           verify_token: decryptedVerifyToken,
+          app_id: config.app_id ?? null,
+          has_app_secret: Boolean(config.app_secret),
           message:
             'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. This usually means the key changed, or it differs between environments (local vs Hostinger vs Vercel). Click "Reset Configuration" below, then re-save.',
         },
@@ -221,6 +224,8 @@ export async function GET() {
               connected: false,
               reason: 'meta_api_error',
               verify_token: decryptedVerifyToken,
+              app_id: config.app_id ?? null,
+              has_app_secret: Boolean(config.app_secret),
               message: explained.summary,
               meta: metaErrorPayload(explained),
             },
@@ -244,7 +249,7 @@ export async function GET() {
       if (config.waba_id) {
         try {
           const subs = await getSubscribedApps({ wabaId: config.waba_id, accessToken })
-          const state = appSubscriptionState(subs, process.env.META_APP_ID)
+          const state = appSubscriptionState(subs, config.app_id)
           wabaSubscription = {
             checked: true,
             subscribed: state.subscribed,
@@ -275,6 +280,8 @@ export async function GET() {
       phone_info: phoneInfo,
       waba_subscription: wabaSubscription,
       verify_token: decryptedVerifyToken,
+      app_id: config.app_id ?? null,
+      has_app_secret: Boolean(config.app_secret),
     })
   } catch (error) {
     console.error('Error in WhatsApp config GET:', error)
@@ -318,11 +325,15 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, app_id, app_secret } = body
 
-    if (!access_token || !phone_number_id) {
+    const cleanPhoneNumberId = typeof phone_number_id === 'string' ? phone_number_id.trim() : phone_number_id
+    const cleanWabaId = typeof waba_id === 'string' ? waba_id.trim() : waba_id
+    const cleanAppId = typeof app_id === 'string' ? app_id.trim() : app_id
+
+    if (!cleanPhoneNumberId) {
       return NextResponse.json(
-        { error: 'access_token and phone_number_id are required' },
+        { error: 'phone_number_id is required' },
         { status: 400 }
       )
     }
@@ -331,7 +342,7 @@ export async function POST(request: Request) {
     // mistakes (the +phone number, a display name, a URL) here with a
     // named field, instead of letting Meta answer "(#100) Unsupported
     // get request" for a value we could have rejected up front.
-    if (!isNumericMetaId(phone_number_id)) {
+    if (!isNumericMetaId(cleanPhoneNumberId)) {
       return NextResponse.json(
         {
           error:
@@ -341,7 +352,7 @@ export async function POST(request: Request) {
         { status: 400 }
       )
     }
-    if (waba_id !== undefined && waba_id !== null && waba_id !== '' && !isNumericMetaId(waba_id)) {
+    if (cleanWabaId !== undefined && cleanWabaId !== null && cleanWabaId !== '' && !isNumericMetaId(cleanWabaId)) {
       return NextResponse.json(
         {
           error:
@@ -351,7 +362,17 @@ export async function POST(request: Request) {
         { status: 400 }
       )
     }
-    const metaCtx: MetaErrorContext = { phoneNumberId: phone_number_id, wabaId: waba_id || null }
+    if (cleanAppId !== undefined && cleanAppId !== null && cleanAppId !== '' && !isNumericMetaId(cleanAppId)) {
+      return NextResponse.json(
+        {
+          error:
+            'Meta App ID must contain only digits — copy it from Meta for Developers → App Settings → Basic.',
+          field: 'app_id',
+        },
+        { status: 400 }
+      )
+    }
+    const metaCtx: MetaErrorContext = { phoneNumberId: cleanPhoneNumberId, wabaId: cleanWabaId || null }
 
     if (pin !== undefined && pin !== null && pin !== '') {
       if (typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
@@ -360,6 +381,53 @@ export async function POST(request: Request) {
           { status: 400 }
         )
       }
+    }
+
+    // Look up any pre-existing row for this account early so we can support
+    // partial updates (updating app_id or app_secret without forcing token re-entry)
+    // and check whether this number is already registered with Meta.
+    const { data: existing } = await supabase
+      .from('whatsapp_config')
+      .select('*')
+      .eq('account_id', accountId)
+      .maybeSingle()
+
+    // Resolve access token: either provided in body or decrypted from existing row
+    let effectiveAccessToken: string
+    let encryptedAccessToken: string
+    if (access_token && typeof access_token === 'string' && access_token.trim()) {
+      effectiveAccessToken = access_token.trim()
+      try {
+        encryptedAccessToken = encrypt(effectiveAccessToken)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown encryption error'
+        console.error('Encryption failed:', message)
+        return NextResponse.json(
+          {
+            error:
+              `Failed to encrypt token (${message}). Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.`,
+          },
+          { status: 500 }
+        )
+      }
+    } else if (existing?.access_token) {
+      try {
+        effectiveAccessToken = decrypt(existing.access_token)
+        encryptedAccessToken = existing.access_token
+      } catch (err) {
+        return NextResponse.json(
+          {
+            error:
+              'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. Please re-enter your access token.',
+          },
+          { status: 400 }
+        )
+      }
+    } else {
+      return NextResponse.json(
+        { error: 'access_token and phone_number_id are required' },
+        { status: 400 }
+      )
     }
 
     // Reject if another account has already claimed this phone_number_id.
@@ -372,7 +440,7 @@ export async function POST(request: Request) {
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('account_id')
-      .eq('phone_number_id', phone_number_id)
+      .eq('phone_number_id', cleanPhoneNumberId)
       .neq('account_id', accountId)
       .maybeSingle()
 
@@ -398,8 +466,8 @@ export async function POST(request: Request) {
     let phoneInfo
     try {
       phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: phone_number_id,
-        accessToken: access_token,
+        phoneNumberId: cleanPhoneNumberId,
+        accessToken: effectiveAccessToken,
       })
     } catch (err) {
       return metaFailure(err, 'verify_number', metaCtx)
@@ -409,20 +477,20 @@ export async function POST(request: Request) {
     // user typed. A foreign-but-valid WABA ID used to save fine and
     // subscribe the *wrong* account, surfacing days later as a webhook
     // that never fires. Failing here names the mismatch instead.
-    if (waba_id) {
+    if (cleanWabaId) {
       let wabaNumbers
       try {
         wabaNumbers = await listWabaPhoneNumbers({
-          wabaId: waba_id,
-          accessToken: access_token,
+          wabaId: cleanWabaId,
+          accessToken: effectiveAccessToken,
         })
       } catch (err) {
         return metaFailure(err, 'waba_phone_numbers', metaCtx)
       }
-      if (!phoneNumberBelongsToWaba(wabaNumbers, phone_number_id)) {
+      if (!phoneNumberBelongsToWaba(wabaNumbers, cleanPhoneNumberId)) {
         return NextResponse.json(
           {
-            error: describeWabaPhoneMismatch(wabaNumbers, phone_number_id, waba_id),
+            error: describeWabaPhoneMismatch(wabaNumbers, cleanPhoneNumberId, cleanWabaId),
             field: 'waba_id',
             meta: {
               code: null,
@@ -438,35 +506,54 @@ export async function POST(request: Request) {
       }
     }
 
-    // Encrypt sensitive tokens before storing
-    let encryptedAccessToken: string
-    let encryptedVerifyToken: string | null
-    try {
-      encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown encryption error'
-      console.error('Encryption failed:', message)
-      return NextResponse.json(
-        {
-          error:
-            `Failed to encrypt token (${message}). Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.`,
-        },
-        { status: 500 }
-      )
+    // Encrypt sensitive verify token if supplied
+    let encryptedVerifyToken: string | null = null
+    if (verify_token) {
+      try {
+        encryptedVerifyToken = encrypt(verify_token)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown encryption error'
+        console.error('Encryption of verify_token failed:', message)
+        return NextResponse.json(
+          { error: `Failed to encrypt verify token (${message}).` },
+          { status: 500 }
+        )
+      }
+    } else if (existing?.verify_token) {
+      encryptedVerifyToken = existing.verify_token
     }
 
-    // Look up any pre-existing row for this account so we know whether
-    // this number is already registered with Meta — if so we can skip
-    // /register when the user didn't provide a PIN this time around.
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id, verify_token')
-      .eq('account_id', accountId)
-      .maybeSingle()
+    // Resolve app_id (partial updates preserve existing unless explicitly set/cleared)
+    let resolvedAppId: string | null = null
+    if (app_id !== undefined) {
+      resolvedAppId = cleanAppId ? cleanAppId : null
+    } else {
+      resolvedAppId = existing?.app_id ?? null
+    }
+
+    // Encrypt Meta App Secret if supplied (or retain existing)
+    let encryptedAppSecret: string | null = null
+    if (app_secret !== undefined) {
+      if (app_secret && typeof app_secret === 'string' && app_secret.trim()) {
+        try {
+          encryptedAppSecret = encrypt(app_secret.trim())
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Unknown encryption error'
+          console.error('Encryption of app_secret failed:', message)
+          return NextResponse.json(
+            { error: `Failed to encrypt Meta App Secret (${message}).` },
+            { status: 500 }
+          )
+        }
+      } else {
+        encryptedAppSecret = null
+      }
+    } else {
+      encryptedAppSecret = existing?.app_secret ?? null
+    }
 
     const sameNumber =
-      existing?.phone_number_id === phone_number_id &&
+      existing?.phone_number_id === cleanPhoneNumberId &&
       existing?.registered_at != null
 
     // Step 1: register the phone number for inbound webhooks.
@@ -500,8 +587,8 @@ export async function POST(request: Request) {
       } else {
         try {
           await registerPhoneNumber({
-            phoneNumberId: phone_number_id,
-            accessToken: access_token,
+            phoneNumberId: cleanPhoneNumberId,
+            accessToken: effectiveAccessToken,
             pin,
           })
           registeredAt = new Date().toISOString()
@@ -530,11 +617,11 @@ export async function POST(request: Request) {
     // has been written yet, so the user just fixes the cause and saves
     // again.
     let subscribedAppsAt: string | null = null
-    if (waba_id) {
+    if (cleanWabaId) {
       try {
         await subscribeWabaToApp({
-          wabaId: waba_id,
-          accessToken: access_token,
+          wabaId: cleanWabaId,
+          accessToken: effectiveAccessToken,
         })
         subscribedAppsAt = new Date().toISOString()
       } catch (err) {
@@ -546,8 +633,10 @@ export async function POST(request: Request) {
     // store the credentials and the error so the UI can guide the
     // user through a retry.
     const baseRow = {
-      phone_number_id,
-      waba_id: waba_id || null,
+      phone_number_id: cleanPhoneNumberId,
+      waba_id: cleanWabaId || null,
+      app_id: resolvedAppId,
+      app_secret: encryptedAppSecret,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken ?? existing?.verify_token ?? null,
       status: registrationError ? 'disconnected' : 'connected',
@@ -566,8 +655,16 @@ export async function POST(request: Request) {
 
       if (updateError) {
         console.error('Error updating whatsapp_config:', updateError)
+        const isMissingColumn =
+          (updateError as { code?: string }).code === 'PGRST204' ||
+          updateError.message.includes('app_id') ||
+          updateError.message.includes('app_secret')
         return NextResponse.json(
-          { error: `Failed to update configuration: ${updateError.message}` },
+          {
+            error: isMissingColumn
+              ? 'Database schema is missing app_id or app_secret columns. Please apply migration 045 in Supabase SQL editor.'
+              : `Failed to update configuration: ${updateError.message}`,
+          },
           { status: 500 }
         )
       }
@@ -586,8 +683,16 @@ export async function POST(request: Request) {
 
       if (insertError) {
         console.error('Error inserting whatsapp_config:', insertError)
+        const isMissingColumn =
+          (insertError as { code?: string }).code === 'PGRST204' ||
+          insertError.message.includes('app_id') ||
+          insertError.message.includes('app_secret')
         return NextResponse.json(
-          { error: `Failed to save configuration: ${insertError.message}` },
+          {
+            error: isMissingColumn
+              ? 'Database schema is missing app_id or app_secret columns. Please apply migration 045 in Supabase SQL editor.'
+              : `Failed to save configuration: ${insertError.message}`,
+          },
           { status: 500 }
         )
       }
@@ -606,6 +711,7 @@ export async function POST(request: Request) {
       // Save succeeded but the number isn't actually live. Return
       // 200 with a structured error so the UI can show the specific
       // remediation step instead of a generic toast.
+      invalidateWebhookAppSecretsCache()
       return NextResponse.json({
         success: false,
         saved: true,
@@ -615,11 +721,14 @@ export async function POST(request: Request) {
         meta: registrationMeta,
         phone_info: phoneInfo,
         verify_token: returnedVerifyToken,
+        app_id: resolvedAppId,
+        has_app_secret: Boolean(encryptedAppSecret),
       })
     }
 
     // Clear cache so UI reflects freshly saved status immediately
     configStatusCache.delete(`${accountId}:${phone_number_id}`)
+    invalidateWebhookAppSecretsCache()
 
     return NextResponse.json({
       success: true,
@@ -632,6 +741,8 @@ export async function POST(request: Request) {
       registration_skipped: registrationSkipped,
       phone_info: phoneInfo,
       verify_token: returnedVerifyToken,
+      app_id: resolvedAppId,
+      has_app_secret: Boolean(encryptedAppSecret),
     })
   } catch (error) {
     console.error('Error in WhatsApp config POST:', error)
@@ -681,6 +792,7 @@ export async function DELETE() {
     }
 
     configStatusCache.clear()
+    invalidateWebhookAppSecretsCache()
     return NextResponse.json({ success: true })
   } catch (error) {
     console.error('Error in WhatsApp config DELETE:', error)

@@ -395,8 +395,6 @@ Broadcast Manager is a standard Next.js application that can be deployed on any 
 | `ENCRYPTION_KEY` | Server-only | **Yes** | 32-byte hex string for AES-256-GCM encryption of access tokens and AI keys |
 | `NEXT_PUBLIC_SITE_URL` | Client & Server | **Yes** | Canonical deployment URL (`https://crm.yourdomain.com`) |
 | `NEXT_PUBLIC_APP_LOCALE` | Client & Server | No | Default language (`en`, `es`, `ko`, `pt`). Defaults to `en` |
-| `META_APP_SECRET` | Server-only | Recommended | Meta App Secret for verifying webhook HMAC-SHA256 signatures |
-| `META_APP_ID` | Server-only | Optional | Meta Application ID for embedded signup flows |
 | `AUTOMATION_CRON_SECRET` | Server-only | Recommended | Shared secret for securing external cron runners (`/api/automations/cron`) |
 | `AI_REQUEST_TIMEOUT_MS` | Server-only | Optional | Timeout limit for LLM generation (Defaults to `15000`) |
 

@@ -167,10 +167,10 @@ export async function POST(request: Request) {
       // Media headers (image/video/document) need a Resumable-Upload
       // handle (Meta rejects a plain URL at creation). Derive it from
       // header_media_url before building the payload. Surfaces a 400 with
-      // an actionable message (missing META_APP_ID, unreachable URL,
+      // an actionable message (missing Meta App ID, unreachable URL,
       // wrong type/size).
       try {
-        await ensureMediaHeaderHandle(payload, accessToken)
+        await ensureMediaHeaderHandle(payload, accessToken, config.app_id)
       } catch (e) {
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header media upload failed.' },

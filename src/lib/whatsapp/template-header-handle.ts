@@ -26,6 +26,7 @@ const UNREACHABLE_MESSAGE =
 export async function ensureMediaHeaderHandle(
   payload: TemplatePayload,
   accessToken: string,
+  appId?: string | null,
 ): Promise<void> {
   const kind = payload.header_type
   if (!isMediaHeaderKind(kind)) return
@@ -34,10 +35,10 @@ export async function ensureMediaHeaderHandle(
 
   const spec = MEDIA_HEADER_SPECS[kind]
 
-  const appId = process.env.META_APP_ID
-  if (!appId) {
+  const cleanAppId = appId?.trim()
+  if (!cleanAppId) {
     throw new Error(
-      'Media-header templates need META_APP_ID set (used for Meta’s Resumable Upload). Add it to your environment, or remove the media header.',
+      'Media-header templates require a Meta App ID. Please configure your Meta App ID in Settings → WhatsApp Connection, or remove the media header.',
     )
   }
 
@@ -90,7 +91,7 @@ export async function ensureMediaHeaderHandle(
   const fileName = `header.${spec.extensions[mimeType]}`
 
   const { handle } = await uploadResumableMedia({
-    appId,
+    appId: cleanAppId,
     accessToken,
     fileName,
     mimeType,

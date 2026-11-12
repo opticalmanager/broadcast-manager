@@ -40,7 +40,7 @@ is included.
   `NEXT_PUBLIC_APP_LOCALE` (`en | ko | pt | es`), so the UI language is
   fixed per image.
 - Everything else (`SUPABASE_SERVICE_ROLE_KEY`, `ENCRYPTION_KEY`,
-  `META_APP_SECRET`, …) is read at **runtime** from `.env.local` via
+  `AUTOMATION_CRON_SECRET`, …) is read at **runtime** from `.env.local` via
   `env_file` and is never baked into the image — safe to change with
   just a container restart.
 

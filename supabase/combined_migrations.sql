@@ -5592,6 +5592,143 @@ COMMENT ON COLUMN messages.error_details IS
 
 -- >>> END OF MIGRATION: 042_message_failure_reason.sql <<<
 
+
+-- >>> START OF MIGRATION: 043_broadcast_recipients_contact_index.sql <<<
+-- Migration 043: Index broadcast_recipients by contact_id and broadcasts by template_name
+-- Accelerates looking up a contact's last campaign and template-level audience de-duplication
+
+CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_contact_created
+  ON broadcast_recipients (contact_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_broadcasts_account_template
+  ON broadcasts (account_id, template_name);
+-- >>> END OF MIGRATION: 043_broadcast_recipients_contact_index.sql <<<
+
+-- >>> START OF MIGRATION: 044_broadcast_paused_support.sql <<<
+-- Migration 044: Broadcast paused support and KPI separation
+
+-- 1. Update broadcasts status check constraint
+DO $$
+BEGIN
+  ALTER TABLE broadcasts DROP CONSTRAINT IF EXISTS broadcasts_status_check;
+  ALTER TABLE broadcasts ADD CONSTRAINT broadcasts_status_check
+    CHECK (status IN ('draft', 'scheduled', 'sending', 'sent', 'failed', 'paused'));
+EXCEPTION
+  WHEN undefined_object THEN NULL;
+END $$;
+
+-- 2. Update broadcast_recipients status check constraint
+DO $$
+BEGIN
+  ALTER TABLE broadcast_recipients DROP CONSTRAINT IF EXISTS broadcast_recipients_status_check;
+  ALTER TABLE broadcast_recipients ADD CONSTRAINT broadcast_recipients_status_check
+    CHECK (status IN ('pending', 'sent', 'delivered', 'read', 'replied', 'failed', 'paused'));
+EXCEPTION
+  WHEN undefined_object THEN NULL;
+END $$;
+
+-- 3. Add paused_count column to broadcasts if not exists
+ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS paused_count INTEGER DEFAULT 0;
+
+-- 4. Update incremental trigger column helper
+CREATE OR REPLACE FUNCTION public._bcast_cols_for_status(s TEXT)
+RETURNS TEXT[] AS $$
+BEGIN
+  -- 'pending' contributes to nothing.
+  IF s = 'pending'   THEN RETURN ARRAY[]::TEXT[]; END IF;
+  IF s = 'sent'      THEN RETURN ARRAY['sent_count']; END IF;
+  IF s = 'delivered' THEN RETURN ARRAY['sent_count','delivered_count']; END IF;
+  IF s = 'read'      THEN RETURN ARRAY['sent_count','delivered_count','read_count']; END IF;
+  IF s = 'replied'   THEN RETURN ARRAY['sent_count','delivered_count','read_count','replied_count']; END IF;
+  IF s = 'failed'    THEN RETURN ARRAY['failed_count']; END IF;
+  IF s = 'paused'    THEN RETURN ARRAY['paused_count']; END IF;
+  RETURN ARRAY[]::TEXT[];
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- 5. Update safety net recompute function
+CREATE OR REPLACE FUNCTION public.recompute_broadcast_counts(bid UUID)
+RETURNS VOID AS $$
+BEGIN
+  UPDATE broadcasts b SET
+    sent_count      = agg.sent_count,
+    delivered_count = agg.delivered_count,
+    read_count      = agg.read_count,
+    replied_count   = agg.replied_count,
+    failed_count    = agg.failed_count,
+    paused_count    = agg.paused_count,
+    updated_at      = NOW()
+  FROM (
+    SELECT
+      COUNT(*) FILTER (WHERE status IN ('sent','delivered','read','replied')) AS sent_count,
+      COUNT(*) FILTER (WHERE status IN ('delivered','read','replied'))        AS delivered_count,
+      COUNT(*) FILTER (WHERE status IN ('read','replied'))                    AS read_count,
+      COUNT(*) FILTER (WHERE status = 'replied')                              AS replied_count,
+      COUNT(*) FILTER (WHERE status = 'failed')                               AS failed_count,
+      COUNT(*) FILTER (WHERE status = 'paused')                               AS paused_count
+    FROM broadcast_recipients
+    WHERE broadcast_id = bid
+  ) agg
+  WHERE b.id = bid;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- 6. Migrate any historical failed recipients whose failure was due to paused
+UPDATE broadcast_recipients
+SET status = 'paused'
+WHERE status = 'failed'
+  AND (error_message ILIKE '%pause%' OR error_message LIKE '%132015%');
+
+-- 7. For any broadcast in 'paused' status, mark remaining 'pending' recipients as 'paused'
+UPDATE broadcast_recipients r
+SET status = 'paused', error_message = COALESCE(r.error_message, 'Campaign paused')
+FROM broadcasts b
+WHERE r.broadcast_id = b.id
+  AND b.status = 'paused'
+  AND r.status = 'pending';
+
+-- 8. Backfill paused_count and recompute counts across all broadcasts
+UPDATE broadcasts b
+SET paused_count = COALESCE(agg.cnt, 0)
+FROM (
+  SELECT broadcast_id, COUNT(*) AS cnt
+  FROM broadcast_recipients
+  WHERE status = 'paused'
+  GROUP BY broadcast_id
+) agg
+WHERE b.id = agg.broadcast_id;
+-- >>> END OF MIGRATION: 044_broadcast_paused_support.sql <<<
+
+-- >>> START OF MIGRATION: 045_whatsapp_config_app_credentials.sql <<<
+-- Migration 045: Add Meta App ID and encrypted Meta App Secret to whatsapp_config
+-- Stores Meta App ID and AES-256-GCM encrypted Meta App Secret per account.
+
+ALTER TABLE whatsapp_config
+  ADD COLUMN IF NOT EXISTS app_id TEXT,
+  ADD COLUMN IF NOT EXISTS app_secret TEXT;
+
+-- Index for looking up config by app_id
+CREATE INDEX IF NOT EXISTS idx_whatsapp_config_app_id
+  ON whatsapp_config (app_id);
+
+COMMENT ON COLUMN whatsapp_config.app_id IS
+  'Meta App ID (Meta for Developers → App Settings → Basic). Required for media-header template resumable uploads and WABA webhook pairing check.';
+
+COMMENT ON COLUMN whatsapp_config.app_secret IS
+  'Encrypted Meta App Secret (AES-256-GCM using ENCRYPTION_KEY). Used to verify x-hub-signature-256 on inbound webhook POSTs.';
+
+-- Backfill Precision Optics account credentials from previous environment configuration
+-- Account ID: a79a3d48-a0a4-4b33-9a57-a105a8feb326
+-- Meta App ID: 4160791244052881
+-- Encrypted app_secret using ENCRYPTION_KEY (AES-256-GCM: iv:ciphertext:authTag)
+UPDATE whatsapp_config
+SET
+  app_id = COALESCE(app_id, '4160791244052881'),
+  app_secret = COALESCE(app_secret, '256da746f01b84d1bdeaca23:b39a7c2aa8bc503a590ec892590bfb666957f355628ccdb9a56eeb8c974c8aa5:65b1dabd2470618413bf6f877525110a')
+WHERE account_id = 'a79a3d48-a0a4-4b33-9a57-a105a8feb326'
+  AND (app_id IS NULL OR app_secret IS NULL);
+-- >>> END OF MIGRATION: 045_whatsapp_config_app_credentials.sql <<<
+
 -- >>> VERIFICATION SMOKE TEST <<<
 -- Post-migration assertions for the CI job in
 -- `.github/workflows/migrations.yml`.
@@ -5670,6 +5807,16 @@ BEGIN
       'messages.error_code/error_title/error_details are missing — migration 042 did not apply';
   END IF;
 
+  -- Migration 045: Meta App credentials on whatsapp_config
+  IF (
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'whatsapp_config'
+      AND column_name IN ('app_id', 'app_secret')
+  ) <> 2 THEN
+    RAISE EXCEPTION
+      'whatsapp_config.app_id/app_secret are missing — migration 045 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
@@ -5688,4 +5835,3 @@ $$;
 --    assertion (commit 42c7db0, run 31579334056) surfaced as
 --    `failed to execute query: error: ...` and exited 1. This is not a
 --    decorative green tick.
-
