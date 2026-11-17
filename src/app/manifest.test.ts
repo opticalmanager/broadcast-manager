@@ -6,7 +6,7 @@ describe('Web App Manifest', () => {
     const m = manifest();
 
     expect(m.name).toContain('Broadcast Manager');
-    expect(m.short_name).toBe('Broadcast CRM');
+    expect(m.short_name).toBe('Broadcast Manager');
     expect(m.display).toBe('standalone');
     expect(m.start_url).toBe('/');
     expect(m.theme_color).toBe('#22c55e');

@@ -35,7 +35,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Broadcast CRM",
+    title: "Broadcast Manager",
   },
   icons: {
     icon: [{ url: "/icon" }],

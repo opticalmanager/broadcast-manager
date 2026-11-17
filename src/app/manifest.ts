@@ -2,8 +2,8 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Broadcast Manager — WhatsApp CRM',
-    short_name: 'Broadcast CRM',
+    name: 'Broadcast Manager — WhatsApp Marketing Platform',
+    short_name: 'Broadcast Manager',
     description:
       'Shared inbox, contacts, sales pipelines, and WhatsApp broadcast marketing.',
     start_url: '/',
